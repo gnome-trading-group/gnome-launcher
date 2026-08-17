@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "gnome-launcher"
+version = "0.1.0"
+description = "Event-driven strategy launch orchestration"
+packages = [{include = "launcher"}]
+
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+gnomepy = "^2.5.0"
+boto3 = "*"
+requests = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+moto = {version = "*", extras = ["sqs", "sns", "dynamodb", "secretsmanager"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
