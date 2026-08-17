@@ -15,6 +15,7 @@ from launcher.rules.types import ResolvedStrategyConfig, RuleContext, RuleMatch
 from launcher.config import config
 from launcher.slack_client import SlackClient
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +63,9 @@ def _process_message(message: dict, ctx: RuleContext):
             )
             continue
 
+        # When Slack interaction is disabled, skip approval and auto-launch everything
+        launch_path = match.rule["launch_path"] if config.SLACK_INTERACTION_ENABLED else "auto"
+
         resolved_dict = dataclasses.asdict(match.evaluation.resolved_config)
         request = ctx.dynamo.create_launch_request(
             rule_type=rule_type,
@@ -70,11 +74,11 @@ def _process_message(message: dict, ctx: RuleContext):
             resolved_config=resolved_dict,
             matched_rule_id=match.rule["rule_id"],
             matched_rule_name=match.rule["name"],
-            launch_path=match.rule["launch_path"],
-            status="LAUNCHING" if match.rule["launch_path"] == "auto" else "PENDING_APPROVAL",
+            launch_path=launch_path,
+            status="LAUNCHING" if launch_path == "auto" else "PENDING_APPROVAL",
         )
 
-        if match.rule["launch_path"] == "auto":
+        if launch_path == "auto":
             _auto_launch(request, match, ctx)
         else:
             _request_approval(request, match, ctx)
