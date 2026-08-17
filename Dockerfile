@@ -11,3 +11,5 @@ RUN poetry config virtualenvs.create false && \
     poetry install --no-root --no-interaction --no-ansi
 
 COPY launcher/ launcher/
+
+ENTRYPOINT ["python", "-m", "awslambdaric"]
