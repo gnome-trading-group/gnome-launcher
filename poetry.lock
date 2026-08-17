@@ -463,14 +463,14 @@ websockets = ["websocket-client (>=1.3.0)"]
 
 [[package]]
 name = "gnomepy"
-version = "2.6.3"
+version = "2.6.5"
 description = ""
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "gnomepy-2.6.3-py3-none-any.whl", hash = "sha256:3e88761fef094577a6894bc463676e0aefe3cd1c8a737f916db0cc29b0ec7d0d"},
-    {file = "gnomepy-2.6.3.tar.gz", hash = "sha256:140932f98043bb19f0917a3b79b25557504569cc78b116b03c5780d679404a7d"},
+    {file = "gnomepy-2.6.5-py3-none-any.whl", hash = "sha256:5eca1994a4d8a945d68cba1a626df67bf5980903969e4aeab93de97add0fe072"},
+    {file = "gnomepy-2.6.5.tar.gz", hash = "sha256:e69aafccec778d64a2e0c36e2c9a7cdb2446715cc9ca2b93d16d1f4b80db1e1e"},
 ]
 
 [package.dependencies]

@@ -15,7 +15,6 @@ from launcher.rules.types import ResolvedStrategyConfig, RuleContext, RuleMatch
 from launcher.config import config
 from launcher.slack_client import SlackClient
 
-
 logger = logging.getLogger(__name__)
 
 
