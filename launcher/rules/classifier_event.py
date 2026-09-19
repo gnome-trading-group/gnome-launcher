@@ -52,6 +52,11 @@ class ClassifierEventRule(RuleType):
                 "items": {"type": "integer"},
                 "description": "Only include listings from these exchange IDs",
             },
+            "listing_profile_mapping": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Maps exchange_id (as string) to simulation profile name for dynamically resolved listings",
+            },
             **STRATEGY_PARAMS_SCHEMA,
         },
         "required": STRATEGY_REQUIRED_PARAMS,
@@ -86,13 +91,17 @@ class ClassifierEventRule(RuleType):
             if required_types and not required_types & found_types:
                 continue
 
-            listings = self._resolve_listings(contracts, params, ctx)
+            listings, listing_profile_entries = self._resolve_listings(contracts, params, ctx)
             if not listings:
                 continue
 
+            resolved_config = ResolvedStrategyConfig.from_params(params, listings=listings)
+            if listing_profile_entries:
+                resolved_config.simulation_config = {**resolved_config.simulation_config, **listing_profile_entries}
+
             return RuleEvaluation(
                 should_launch=True,
-                resolved_config=ResolvedStrategyConfig.from_params(params, listings=listings),
+                resolved_config=resolved_config,
                 reason=(
                     f"Event '{event_name}' has {len(all_relationships)} relationships"
                     f" ({', '.join(sorted(found_types))})"
@@ -101,18 +110,25 @@ class ClassifierEventRule(RuleType):
 
         return None
 
-    def _resolve_listings(self, contracts, params: dict, ctx: RuleContext) -> str | None:
+    def _resolve_listings(
+        self, contracts, params: dict, ctx: RuleContext
+    ) -> tuple[str | None, dict[str, str]]:
         if params.get("listing_resolution") == "static":
-            return params.get("static_listings")
+            return params.get("static_listings"), {}
 
+        listing_profile_mapping: dict[str, str] = params.get("listing_profile_mapping", {})
         listing_ids = []
+        listing_profile_entries: dict[str, str] = {}
         exchange_filter = params.get("exchange_filter")
         for contract in contracts:
-            listings = ctx.registry.get_listing(security_id=contract.security_id)
-            for listing in listings:
+            resolved = ctx.registry.get_listing(security_id=contract.security_id)
+            for listing in resolved:
                 if not exchange_filter or listing.exchange_id in exchange_filter:
                     listing_ids.append(listing.listing_id)
+                    profile = listing_profile_mapping.get(str(listing.exchange_id))
+                    if profile:
+                        listing_profile_entries[f"simulation.listing.{listing.listing_id}.profile"] = profile
 
         if not listing_ids:
-            return None
-        return ",".join(str(lid) for lid in listing_ids)
+            return None, {}
+        return ",".join(str(lid) for lid in listing_ids), listing_profile_entries
