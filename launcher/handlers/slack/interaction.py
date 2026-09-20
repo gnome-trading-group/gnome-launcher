@@ -109,7 +109,7 @@ def _build_resolved_blocks(request: dict, status_text: str, state: str) -> list[
                 {"type": "mrkdwn", "text": f"*Rule:*\n{request.get('matched_rule_name', '')}"},
                 {"type": "mrkdwn", "text": f"*Strategy:*\n{config.get('strategy_class', '')} (ID {config.get('strategy_id', '')})"},
                 {"type": "mrkdwn", "text": f"*Mode:*\n{config.get('mode', '')}"},
-                {"type": "mrkdwn", "text": f"*Listings:*\n{config.get('listings', '')}"},
+                {"type": "mrkdwn", "text": f"*Listings:*\n{', '.join(str(x) for x in config.get('listings', []))}"},
             ],
         },
         {

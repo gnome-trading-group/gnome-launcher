@@ -112,9 +112,12 @@ class ClassifierEventRule(RuleType):
 
     def _resolve_listings(
         self, contracts, params: dict, ctx: RuleContext
-    ) -> tuple[str | None, dict[str, str]]:
+    ) -> tuple[list[int] | None, dict[str, str]]:
         if params.get("listing_resolution") == "static":
-            return params.get("static_listings"), {}
+            raw = params.get("static_listings")
+            if isinstance(raw, str):
+                return [int(x.strip()) for x in raw.split(",") if x.strip()], {}
+            return raw, {}
 
         listing_profile_mapping: dict[str, str] = params.get("listing_profile_mapping", {})
         listing_ids = []
@@ -131,4 +134,4 @@ class ClassifierEventRule(RuleType):
 
         if not listing_ids:
             return None, {}
-        return ",".join(str(lid) for lid in listing_ids), listing_profile_entries
+        return listing_ids, listing_profile_entries

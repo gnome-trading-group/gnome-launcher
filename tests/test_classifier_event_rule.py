@@ -102,7 +102,7 @@ def test_exchange_filter_applied():
     data = {"event_ids": [1], "event_names": ["Test Event"]}
     result = rule.evaluate(data, _base_params(exchange_filter=[1]), ctx)
     assert result is not None
-    assert result.resolved_config.listings == "100"
+    assert result.resolved_config.listings == [100]
 
 
 def test_static_listings():
@@ -115,7 +115,7 @@ def test_static_listings():
         ctx,
     )
     assert result is not None
-    assert result.resolved_config.listings == "999,1000"
+    assert result.resolved_config.listings == [999, 1000]
 
 
 def test_first_matching_event_wins():

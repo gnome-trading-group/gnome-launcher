@@ -13,7 +13,7 @@ class DirectLaunchRule(RuleType):
             "strategy_type": {"type": "string"},
             "strategy_class": {"type": "string"},
             "mode": {"type": "string"},
-            "listings": {"type": "string"},
+            "listings": {"type": "array", "items": {"type": "integer"}},
             "research_commit": {"type": "string"},
             "strategy_args": {"type": "object", "additionalProperties": {"type": "string"}},
             "simulation_config": {"type": "object", "additionalProperties": {"type": "string"}},

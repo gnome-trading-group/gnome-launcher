@@ -73,7 +73,7 @@ def _build_launched_blocks(request: LaunchRequest, username: str) -> list[dict]:
                 {"type": "mrkdwn", "text": f"*Rule:*\n{request.get('matched_rule_name', '')}"},
                 {"type": "mrkdwn", "text": f"*Strategy:*\n{config.get('strategy_class', '')} (ID {config.get('strategy_id', '')})"},
                 {"type": "mrkdwn", "text": f"*Mode:*\n{config.get('mode', '')}"},
-                {"type": "mrkdwn", "text": f"*Listings:*\n{config.get('listings', '')}"},
+                {"type": "mrkdwn", "text": f"*Listings:*\n{', '.join(str(x) for x in config.get('listings', []))}"},
             ],
         },
         {
@@ -93,7 +93,7 @@ def _build_failed_blocks(request: LaunchRequest, username: str, error: str) -> l
                 {"type": "mrkdwn", "text": f"*Rule:*\n{request.get('matched_rule_name', '')}"},
                 {"type": "mrkdwn", "text": f"*Strategy:*\n{config.get('strategy_class', '')} (ID {config.get('strategy_id', '')})"},
                 {"type": "mrkdwn", "text": f"*Mode:*\n{config.get('mode', '')}"},
-                {"type": "mrkdwn", "text": f"*Listings:*\n{config.get('listings', '')}"},
+                {"type": "mrkdwn", "text": f"*Listings:*\n{', '.join(str(x) for x in config.get('listings', []))}"},
             ],
         },
         {

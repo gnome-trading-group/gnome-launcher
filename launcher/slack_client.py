@@ -70,7 +70,7 @@ class SlackClient:
         text = (
             f":rocket: *Auto-launched:* {rule_name}\n"
             f"*Strategy:* {config.strategy_class} (ID {config.strategy_id})\n"
-            f"*Mode:* {config.mode} | *Listings:* {config.listings}\n"
+            f"*Mode:* {config.mode} | *Listings:* {', '.join(str(x) for x in config.listings)}\n"
             f"*Reason:* {reason}\n"
             f"<{session_url}|View session>"
         )
@@ -126,7 +126,7 @@ def _build_approval_blocks(
                 {"type": "mrkdwn", "text": f"*Rule:*\n{rule_name}"},
                 {"type": "mrkdwn", "text": f"*Strategy:*\n{config.strategy_class} (ID {config.strategy_id})"},
                 {"type": "mrkdwn", "text": f"*Mode:*\n{config.mode}"},
-                {"type": "mrkdwn", "text": f"*Listings:*\n{config.listings}"},
+                {"type": "mrkdwn", "text": f"*Listings:*\n{', '.join(str(x) for x in config.listings)}"},
             ],
         },
         {

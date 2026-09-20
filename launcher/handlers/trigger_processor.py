@@ -154,4 +154,5 @@ def _compute_dedup_key(rule_type: str, data: dict) -> str:
 
 def _has_active_duplicate(resolved_config: ResolvedStrategyConfig, ctx: RuleContext) -> bool:
     sessions = ctx.registry.get_strategy_sessions(strategy_id=resolved_config.strategy_id, status="RUNNING")
-    return any(s.config.get("listings") == resolved_config.listings for s in sessions)
+    target = set(resolved_config.listings)
+    return any(set(s.config.get("listings", [])) == target for s in sessions)

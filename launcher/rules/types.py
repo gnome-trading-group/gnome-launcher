@@ -37,14 +37,14 @@ class ResolvedStrategyConfig:
     strategy_type: str
     strategy_class: str
     mode: str
-    listings: str
+    listings: list[int]
     research_commit: str | None = None
     region: str | None = None
     strategy_args: dict[str, Any] = field(default_factory=dict)
     simulation_config: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_params(cls, params: dict, *, listings: str) -> ResolvedStrategyConfig:
+    def from_params(cls, params: dict, *, listings: list[int]) -> ResolvedStrategyConfig:
         return cls(
             strategy_id=params["strategy_id"],
             strategy_type=params["strategy_type"],
