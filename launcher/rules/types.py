@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from launcher.dynamo import DynamoClient
@@ -20,11 +20,11 @@ STRATEGY_PARAMS_SCHEMA: dict = {
     "research_commit": {"type": "string"},
     "strategy_args": {
         "type": "object",
-        "additionalProperties": {"type": "string"},
+        "additionalProperties": True,
     },
     "simulation_config": {
         "type": "object",
-        "additionalProperties": {"type": "string"},
+        "additionalProperties": True,
     },
 }
 
@@ -40,8 +40,8 @@ class ResolvedStrategyConfig:
     listings: str
     research_commit: str | None = None
     region: str | None = None
-    strategy_args: dict[str, str] = field(default_factory=dict)
-    simulation_config: dict[str, str] = field(default_factory=dict)
+    strategy_args: dict[str, Any] = field(default_factory=dict)
+    simulation_config: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_params(cls, params: dict, *, listings: str) -> ResolvedStrategyConfig:

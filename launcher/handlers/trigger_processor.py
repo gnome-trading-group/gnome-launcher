@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import uuid
+from typing import Any
 
 from gnomepy.registry import RegistryClient
 
@@ -131,8 +132,8 @@ def _request_approval(request: LaunchRequest, match: RuleMatch, ctx: RuleContext
     )
 
 
-def _build_session_config(resolved_config: ResolvedStrategyConfig) -> dict[str, str]:
-    result: dict[str, str] = {
+def _build_session_config(resolved_config: ResolvedStrategyConfig) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "strategy.id": str(resolved_config.strategy_id),
         "mode": resolved_config.mode,
         "listings": resolved_config.listings,
