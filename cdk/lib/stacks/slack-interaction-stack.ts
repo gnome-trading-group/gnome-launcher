@@ -11,6 +11,9 @@ interface Props extends cdk.StackProps {
   stage: Stage;
   slackChannelId: string;
   approveLaunchFn: lambda.DockerImageFunction;
+  approveShutdownFn: lambda.DockerImageFunction;
+  scheduledLaunchFunctionArn: string;
+  schedulerRoleArn: string;
   requestsTableName: string;
   rulesTableName: string;
 }
@@ -44,21 +47,32 @@ export class LauncherSlackInteractionStack extends cdk.Stack {
         SLACK_SIGNING_SECRET: 'slack-signing-secret',
         SLACK_CHANNEL_ID: props.slackChannelId,
         APPROVE_LAUNCH_FUNCTION_NAME: props.approveLaunchFn.functionName,
+        APPROVE_SHUTDOWN_FUNCTION_NAME: props.approveShutdownFn.functionName,
+        SCHEDULED_LAUNCH_FUNCTION_ARN: props.scheduledLaunchFunctionArn,
+        SCHEDULER_ROLE_ARN: props.schedulerRoleArn,
       },
     });
 
     slackBotTokenSecret.grantRead(slackInteractionFn);
     slackSigningSecret.grantRead(slackInteractionFn);
     props.approveLaunchFn.grantInvoke(slackInteractionFn);
+    props.approveShutdownFn.grantInvoke(slackInteractionFn);
 
     slackInteractionFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'dynamodb:GetItem',
-        'dynamodb:UpdateItem',
-      ],
+      actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.requestsTableName}`,
       ],
+    }));
+
+    slackInteractionFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['scheduler:CreateSchedule', 'scheduler:DeleteSchedule', 'scheduler:UpdateSchedule'],
+      resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/launcher-*`],
+    }));
+
+    slackInteractionFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'],
+      resources: [props.schedulerRoleArn],
     }));
 
     // ── Public API Gateway (no API key — Slack verifies via signing secret) ──

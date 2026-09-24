@@ -56,6 +56,8 @@ def _handle_create(event, dynamo: DynamoClient) -> dict:
         launch_path=body["launch_path"],
         parameters=body["parameters"],
         description=body.get("description"),
+        shutdown_path=body.get("shutdown_path", "auto"),
+        schedule_enabled=body.get("schedule_enabled", False),
         max_concurrent_sessions=body.get("max_concurrent_sessions"),
         cooldown_minutes=body.get("cooldown_minutes", 0),
         dedup_window_minutes=body.get("dedup_window_minutes", 60),
@@ -73,8 +75,9 @@ def _handle_update(event, dynamo: DynamoClient, rule_id: str) -> dict:
     except json.JSONDecodeError:
         return error(400, "Invalid JSON body")
 
-    allowed = {"name", "description", "status", "launch_path", "parameters",
-               "max_concurrent_sessions", "cooldown_minutes", "dedup_window_minutes"}
+    allowed = {"name", "description", "status", "launch_path", "shutdown_path",
+               "schedule_enabled", "parameters", "max_concurrent_sessions",
+               "cooldown_minutes", "dedup_window_minutes"}
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
         return error(400, "No updatable fields provided")

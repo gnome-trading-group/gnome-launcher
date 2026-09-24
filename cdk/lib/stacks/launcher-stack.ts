@@ -20,6 +20,9 @@ interface Props extends cdk.StackProps {
 export class LauncherStack extends cdk.Stack {
   public readonly api: apigateway.RestApi;
   public readonly approveLaunchFn: lambda.DockerImageFunction;
+  public readonly approveShutdownFn: lambda.DockerImageFunction;
+  public readonly scheduledLaunchFunctionArn: string;
+  public readonly schedulerRoleArn: string;
 
   constructor(scope: Construct, id: string, props: Props) {
     super(scope, id, props);
@@ -88,6 +91,14 @@ export class LauncherStack extends cdk.Stack {
       deadLetterQueue: { queue: classifierAdapterDlq, maxReceiveCount: 3 },
     });
 
+    const shutdownDlq = new sqs.Queue(this, 'ShutdownDlq', {
+      retentionPeriod: cdk.Duration.days(14),
+    });
+    const shutdownQueue = new sqs.Queue(this, 'ShutdownQueue', {
+      visibilityTimeout: cdk.Duration.minutes(5),
+      deadLetterQueue: { queue: shutdownDlq, maxReceiveCount: 3 },
+    });
+
     // Subscribe to the classifier's SNS topic
     const classifierNotificationsTopic = sns.Topic.fromTopicArn(
       this,
@@ -102,6 +113,12 @@ export class LauncherStack extends cdk.Stack {
 
     const registryApiKeyId = cdk.Fn.importValue('RegistryApiKeyId');
     const registryApiKeyArn = `arn:aws:apigateway:${this.region}::/apikeys/${registryApiKeyId}`;
+
+    // ── EventBridge Scheduler IAM Role ────────────────────────────────────
+
+    const schedulerRole = new iam.Role(this, 'SchedulerRole', {
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+    });
 
     // ── Shared Lambda factory ─────────────────────────────────────────────
 
@@ -142,9 +159,13 @@ export class LauncherStack extends cdk.Stack {
       'launcher.handlers.custom.classifier_adapter.handler',
       cdk.Duration.seconds(30),
       256,
-      { LAUNCHER_QUEUE_URL: launcherQueue.queueUrl },
+      {
+        LAUNCHER_QUEUE_URL: launcherQueue.queueUrl,
+        SHUTDOWN_QUEUE_URL: shutdownQueue.queueUrl,
+      },
       (fn) => {
         launcherQueue.grantSendMessages(fn);
+        shutdownQueue.grantSendMessages(fn);
       },
     );
     classifierAdapterFn.addEventSource(
@@ -153,9 +174,67 @@ export class LauncherStack extends cdk.Stack {
 
     // ── Trigger Processor Lambda ──────────────────────────────────────────
 
+    const scheduledLaunchFn = createLambda(
+      'ScheduledLaunch',
+      'launcher.handlers.scheduled_launch.handler',
+      cdk.Duration.minutes(2),
+      512,
+      {},
+      (fn) => {
+        requestsTable.grantReadWriteData(fn);
+        slackBotTokenSecret.grantRead(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
+      },
+    );
+
+    scheduledLaunchFn.grantInvoke(schedulerRole);
+
+    this.scheduledLaunchFunctionArn = scheduledLaunchFn.functionArn;
+    this.schedulerRoleArn = schedulerRole.roleArn;
+
     const triggerProcessorFn = createLambda(
       'TriggerProcessor',
       'launcher.handlers.trigger_processor.handler',
+      cdk.Duration.minutes(2),
+      512,
+      {
+        SCHEDULED_LAUNCH_FUNCTION_ARN: scheduledLaunchFn.functionArn,
+        SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
+      },
+      (fn) => {
+        requestsTable.grantReadWriteData(fn);
+        rulesTable.grantReadData(fn);
+        slackBotTokenSecret.grantRead(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['scheduler:CreateSchedule', 'scheduler:DeleteSchedule', 'scheduler:UpdateSchedule'],
+          resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/launcher-*`],
+        }));
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['iam:PassRole'],
+          resources: [schedulerRole.roleArn],
+        }));
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['bedrock:InvokeModel'],
+          resources: ['*'],
+        }));
+      },
+    );
+    triggerProcessorFn.addEventSource(
+      new lambdaEventSources.SqsEventSource(launcherQueue, { batchSize: 1 })
+    );
+
+    // ── Shutdown Processor Lambda ─────────────────────────────────────────
+
+    const shutdownProcessorFn = createLambda(
+      'ShutdownProcessor',
+      'launcher.handlers.shutdown_processor.handler',
       cdk.Duration.minutes(2),
       512,
       {},
@@ -169,8 +248,8 @@ export class LauncherStack extends cdk.Stack {
         }));
       },
     );
-    triggerProcessorFn.addEventSource(
-      new lambdaEventSources.SqsEventSource(launcherQueue, { batchSize: 1 })
+    shutdownProcessorFn.addEventSource(
+      new lambdaEventSources.SqsEventSource(shutdownQueue, { batchSize: 1 })
     );
 
     // ── API Trigger Lambda ────────────────────────────────────────────────
@@ -228,6 +307,40 @@ export class LauncherStack extends cdk.Stack {
       'launcher.handlers.slack.approve_launch.handler',
       cdk.Duration.minutes(2),
       512,
+      {
+        SCHEDULED_LAUNCH_FUNCTION_ARN: scheduledLaunchFn.functionArn,
+        SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
+      },
+      (fn) => {
+        requestsTable.grantReadWriteData(fn);
+        slackBotTokenSecret.grantRead(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['scheduler:CreateSchedule'],
+          resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/launcher-*`],
+        }));
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['iam:PassRole'],
+          resources: [schedulerRole.roleArn],
+        }));
+      },
+    );
+
+    new cdk.CfnOutput(this, 'ApproveLaunchFunctionArn', {
+      value: this.approveLaunchFn.functionArn,
+      exportName: 'LauncherApproveLaunchFunctionArn',
+    });
+
+    // ── Approve Shutdown Lambda ───────────────────────────────────────────
+
+    this.approveShutdownFn = createLambda(
+      'ApproveShutdown',
+      'launcher.handlers.slack.approve_shutdown.handler',
+      cdk.Duration.minutes(2),
+      512,
       {},
       (fn) => {
         requestsTable.grantReadWriteData(fn);
@@ -238,11 +351,6 @@ export class LauncherStack extends cdk.Stack {
         }));
       },
     );
-
-    new cdk.CfnOutput(this, 'ApproveLaunchFunctionArn', {
-      value: this.approveLaunchFn.functionArn,
-      exportName: 'LauncherApproveLaunchFunctionArn',
-    });
 
     // ── API Gateway ───────────────────────────────────────────────────────
 

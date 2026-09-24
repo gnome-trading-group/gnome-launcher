@@ -8,7 +8,8 @@ import boto3
 logger = logging.getLogger(__name__)
 
 sqs = boto3.client("sqs")
-QUEUE_URL = os.environ["LAUNCHER_QUEUE_URL"]
+LAUNCHER_QUEUE_URL = os.environ["LAUNCHER_QUEUE_URL"]
+SHUTDOWN_QUEUE_URL = os.environ["SHUTDOWN_QUEUE_URL"]
 
 
 def handler(event, context):
@@ -20,18 +21,34 @@ def handler(event, context):
         else:
             payload = body
 
-        if payload.get("type") != "new_events":
-            logger.info("Ignoring non-new_events message: %s", payload.get("type"))
-            return
+        msg_type = payload.get("type")
+        timestamp = datetime.now(timezone.utc).isoformat()
 
-        sqs.send_message(
-            QueueUrl=QUEUE_URL,
-            MessageBody=json.dumps({
-                "rule_type": "classifier_event",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "data": {
-                    "event_ids": payload["created_event_ids"],
-                    "event_names": payload["created_event_names"],
-                },
-            }),
-        )
+        if msg_type == "new_events":
+            sqs.send_message(
+                QueueUrl=LAUNCHER_QUEUE_URL,
+                MessageBody=json.dumps({
+                    "rule_type": "classifier_event",
+                    "action": "launch",
+                    "timestamp": timestamp,
+                    "data": {
+                        "event_ids": payload["created_event_ids"],
+                        "event_names": payload["created_event_names"],
+                    },
+                }),
+            )
+        elif msg_type == "resolved":
+            sqs.send_message(
+                QueueUrl=SHUTDOWN_QUEUE_URL,
+                MessageBody=json.dumps({
+                    "rule_type": "classifier_event",
+                    "action": "shutdown",
+                    "timestamp": timestamp,
+                    "data": {
+                        "event_ids": payload["resolved_event_ids"],
+                        "event_names": payload["resolved_event_names"],
+                    },
+                }),
+            )
+        else:
+            logger.info("Ignoring classifier message type: %s", msg_type)

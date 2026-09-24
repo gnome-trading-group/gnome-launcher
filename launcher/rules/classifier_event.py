@@ -1,11 +1,26 @@
+import json
+import logging
+import os
+from datetime import datetime, timezone
+
+import anthropic
+
 from launcher.rules.types import (
     STRATEGY_PARAMS_SCHEMA,
     STRATEGY_REQUIRED_PARAMS,
     RuleContext,
     RuleEvaluation,
     ResolvedStrategyConfig,
+    ScheduleResult,
+    ShutdownEvaluation,
     register_rule_type,
     RuleType,
+)
+
+logger = logging.getLogger(__name__)
+
+_BEDROCK_MODEL_ID = os.environ.get(
+    "BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
 )
 
 
@@ -109,6 +124,96 @@ class ClassifierEventRule(RuleType):
             )
 
         return None
+
+    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | None:
+        event_ids = data["event_ids"]
+        event_names = data["event_names"]
+
+        strategy_id = params.get("strategy_id")
+        if not strategy_id:
+            return None
+
+        running_sessions = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status="RUNNING")
+        if not running_sessions:
+            return None
+
+        resolved_listing_ids: set[int] = set()
+        for event_id in event_ids:
+            contracts = ctx.registry.get_event_contracts(event_id=event_id)
+            for contract in contracts:
+                listings = ctx.registry.get_listing(security_id=contract.security_id)
+                resolved_listing_ids.update(l.listing_id for l in listings)
+
+        if not resolved_listing_ids:
+            return None
+
+        target_session_ids = [
+            s.session_id
+            for s in running_sessions
+            if set(s.config.get("listings", [])) & resolved_listing_ids
+        ]
+        if not target_session_ids:
+            return None
+
+        names_preview = ", ".join(event_names[:3]) + ("..." if len(event_names) > 3 else "")
+        return ShutdownEvaluation(
+            should_shutdown=True,
+            target_session_ids=target_session_ids,
+            reason=f"Events resolved: {names_preview}",
+        )
+
+    def compute_schedule_time(self, data: dict, params: dict, ctx: RuleContext) -> ScheduleResult | None:
+        event_ids = data["event_ids"]
+        event_names = data["event_names"]
+
+        contract_names: list[str] = []
+        for event_id in event_ids:
+            contracts = ctx.registry.get_event_contracts(event_id=event_id)
+            contract_names.extend(c.name for c in contracts if hasattr(c, "name") and c.name)
+
+        if not contract_names and event_names:
+            contract_names = list(event_names)
+
+        if not contract_names:
+            return None
+
+        contracts_text = "\n".join(f"- {n}" for n in contract_names[:10])
+        prompt = (
+            "Extract the event start date and time from the following prediction market contract names. "
+            "Return a JSON object with a single field 'start_time' (ISO 8601, UTC) "
+            f"or null if no specific start time can be determined.\n\nContracts:\n{contracts_text}"
+        )
+
+        try:
+            client = anthropic.AnthropicBedrock()
+            message = client.messages.create(
+                model=_BEDROCK_MODEL_ID,
+                max_tokens=128,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1].lstrip("json").strip() if len(parts) > 1 else raw
+            result = json.loads(raw)
+            start_time_str = result.get("start_time")
+            if not start_time_str:
+                return None
+
+            start_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+            if start_dt <= datetime.now(timezone.utc):
+                return None
+
+            names_preview = ", ".join(event_names[:2]) + ("..." if len(event_names) > 2 else "")
+            return ScheduleResult(
+                scheduled_time=start_dt,
+                reason=f"Extracted start time for: {names_preview}",
+            )
+        except Exception:
+            logger.exception("Failed to extract schedule time for events %s", event_ids)
+            return None
 
     def _resolve_listings(
         self, contracts, params: dict, ctx: RuleContext

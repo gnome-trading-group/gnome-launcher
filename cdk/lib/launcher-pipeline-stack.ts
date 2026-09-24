@@ -21,6 +21,9 @@ class AppStage extends cdk.Stage {
       stage: config.account.stage,
       slackChannelId: config.slackChannelId,
       approveLaunchFn: launcherStack.approveLaunchFn,
+      approveShutdownFn: launcherStack.approveShutdownFn,
+      scheduledLaunchFunctionArn: launcherStack.scheduledLaunchFunctionArn,
+      schedulerRoleArn: launcherStack.schedulerRoleArn,
       requestsTableName: 'gnome-launch-requests',
       rulesTableName: 'gnome-launch-rules',
     });

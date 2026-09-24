@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -71,6 +72,19 @@ class RuleMatch:
 
 
 @dataclass
+class ShutdownEvaluation:
+    should_shutdown: bool
+    target_session_ids: list[str]
+    reason: str
+
+
+@dataclass
+class ScheduleResult:
+    scheduled_time: datetime
+    reason: str
+
+
+@dataclass
 class RuleContext:
     registry: RegistryClient
     dynamo: "DynamoClient"
@@ -85,6 +99,12 @@ class RuleType:
 
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | None:
         raise NotImplementedError
+
+    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | None:
+        return None
+
+    def compute_schedule_time(self, data: dict, params: dict, ctx: RuleContext) -> ScheduleResult | None:
+        return None
 
 
 RULE_TYPE_REGISTRY: dict[str, type[RuleType]] = {}
