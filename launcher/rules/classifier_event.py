@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timezone
 
 import anthropic
+import boto3
 
 from launcher.rules.types import (
     STRATEGY_PARAMS_SCHEMA,
@@ -19,9 +20,18 @@ from launcher.rules.types import (
 
 logger = logging.getLogger(__name__)
 
-_BEDROCK_MODEL_ID = os.environ.get(
-    "BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-)
+_ANTHROPIC_API_KEY_SECRET = os.environ.get("ANTHROPIC_API_KEY_SECRET", "anthropic-api-key")
+_MODEL = "claude-haiku-4-5-20251001"
+
+_cached_api_key: str | None = None
+
+
+def _get_anthropic_client() -> anthropic.Anthropic:
+    global _cached_api_key
+    if not _cached_api_key:
+        sm = boto3.client("secretsmanager")
+        _cached_api_key = sm.get_secret_value(SecretId=_ANTHROPIC_API_KEY_SECRET)["SecretString"]
+    return anthropic.Anthropic(api_key=_cached_api_key)
 
 
 @register_rule_type
@@ -185,9 +195,9 @@ class ClassifierEventRule(RuleType):
         )
 
         try:
-            client = anthropic.AnthropicBedrock()
+            client = _get_anthropic_client()
             message = client.messages.create(
-                model=_BEDROCK_MODEL_ID,
+                model=_MODEL,
                 max_tokens=128,
                 messages=[{"role": "user", "content": prompt}],
             )

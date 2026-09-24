@@ -203,6 +203,7 @@ export class LauncherStack extends cdk.Stack {
       {
         SCHEDULED_LAUNCH_FUNCTION_ARN: scheduledLaunchFn.functionArn,
         SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
+        ANTHROPIC_API_KEY_SECRET: 'anthropic-api-key',
       },
       (fn) => {
         requestsTable.grantReadWriteData(fn);
@@ -221,8 +222,8 @@ export class LauncherStack extends cdk.Stack {
           resources: [schedulerRole.roleArn],
         }));
         fn.addToRolePolicy(new iam.PolicyStatement({
-          actions: ['bedrock:InvokeModel'],
-          resources: ['*'],
+          actions: ['secretsmanager:GetSecretValue'],
+          resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:anthropic-api-key*`],
         }));
       },
     );
