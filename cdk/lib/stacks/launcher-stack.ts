@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -9,6 +10,7 @@ import * as secrets from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { join } from 'path';
 import { Stage } from '@gnome-trading-group/gnome-shared-cdk';
 
@@ -18,6 +20,7 @@ interface Props extends cdk.StackProps {
 }
 
 export class LauncherStack extends cdk.Stack {
+  public static readonly USER_POOL_ARN_PARAMETER = '/gnome/cognito/user-pool-arn';
   public readonly api: apigateway.RestApi;
   public readonly approveLaunchFn: lambda.DockerImageFunction;
   public readonly approveShutdownFn: lambda.DockerImageFunction;
@@ -355,51 +358,62 @@ export class LauncherStack extends cdk.Stack {
 
     // ── API Gateway ───────────────────────────────────────────────────────
 
-    const apiKey = new apigateway.ApiKey(this, 'LauncherApiKey');
-    const usagePlan = new apigateway.UsagePlan(this, 'LauncherUsagePlan');
-
     this.api = new apigateway.RestApi(this, 'LauncherApi', {
       restApiName: 'gnome-launcher-api',
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: [...apigateway.Cors.DEFAULT_HEADERS, 'x-api-key'],
+        allowHeaders: apigateway.Cors.DEFAULT_HEADERS,
       },
     });
 
-    usagePlan.addApiStage({ api: this.api, stage: this.api.deploymentStage });
-    usagePlan.addApiKey(apiKey);
+    // Without these, a request the Cognito authorizer rejects comes back with no CORS headers and the browser
+    // reports an opaque CORS failure instead of the auth error.
+    this.api.addGatewayResponse('Default4xxCors', {
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: { 'Access-Control-Allow-Origin': "'*'" },
+    });
+    this.api.addGatewayResponse('Default5xxCors', {
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: { 'Access-Control-Allow-Origin': "'*'" },
+    });
 
-    const apiKeyRequired = true;
+    // Only people drive this API (the controller UI), so it takes a Cognito ID token rather than an API key that
+    // would have to ship in the browser bundle. Slack approvals arrive through LauncherSlackInteractionStack instead.
+    const userPool = cognito.UserPool.fromUserPoolArn(this, 'OperatorUserPool',
+      ssm.StringParameter.valueForStringParameter(this, LauncherStack.USER_POOL_ARN_PARAMETER));
+    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'OperatorAuthorizer', {
+      cognitoUserPools: [userPool],
+    });
+    const methodOptions: apigateway.MethodOptions = {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
     const lambdaIntegration = (fn: lambda.DockerImageFunction) =>
       new apigateway.LambdaIntegration(fn);
 
     const triggers = this.api.root.addResource('triggers');
-    triggers.addMethod('POST', lambdaIntegration(apiTriggerFn), { apiKeyRequired });
+    triggers.addMethod('POST', lambdaIntegration(apiTriggerFn), methodOptions);
 
     const launchRequests = this.api.root.addResource('launch-requests');
-    launchRequests.addMethod('GET', lambdaIntegration(launchRequestsFn), { apiKeyRequired });
+    launchRequests.addMethod('GET', lambdaIntegration(launchRequestsFn), methodOptions);
     const launchRequestById = launchRequests.addResource('{id}');
-    launchRequestById.addMethod('GET', lambdaIntegration(launchRequestsFn), { apiKeyRequired });
+    launchRequestById.addMethod('GET', lambdaIntegration(launchRequestsFn), methodOptions);
 
     const launchRules = this.api.root.addResource('launch-rules');
-    launchRules.addMethod('GET', lambdaIntegration(launchRulesFn), { apiKeyRequired });
-    launchRules.addMethod('POST', lambdaIntegration(launchRulesFn), { apiKeyRequired });
+    launchRules.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRules.addMethod('POST', lambdaIntegration(launchRulesFn), methodOptions);
     const launchRuleById = launchRules.addResource('{id}');
-    launchRuleById.addMethod('GET', lambdaIntegration(launchRulesFn), { apiKeyRequired });
-    launchRuleById.addMethod('PATCH', lambdaIntegration(launchRulesFn), { apiKeyRequired });
-    launchRuleById.addMethod('DELETE', lambdaIntegration(launchRulesFn), { apiKeyRequired });
+    launchRuleById.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRuleById.addMethod('PATCH', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRuleById.addMethod('DELETE', lambdaIntegration(launchRulesFn), methodOptions);
 
     const ruleTypes = this.api.root.addResource('rule-types');
-    ruleTypes.addMethod('GET', lambdaIntegration(ruleTypesFn), { apiKeyRequired });
+    ruleTypes.addMethod('GET', lambdaIntegration(ruleTypesFn), methodOptions);
 
     new cdk.CfnOutput(this, 'LauncherApiUrl', {
       value: this.api.url,
       exportName: 'LauncherApiUrl',
-    });
-    new cdk.CfnOutput(this, 'LauncherApiKeyId', {
-      value: apiKey.keyId,
-      exportName: 'LauncherApiKeyId',
     });
   }
 }

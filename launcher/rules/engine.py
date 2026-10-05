@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from launcher.models import LaunchRule
 from launcher.rules.types import RULE_TYPE_REGISTRY, RuleContext, RuleMatch
+from launcher.sessions import ACTIVE_SESSION_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def _passes_rate_limits(rule: LaunchRule, ctx: RuleContext) -> bool:
     if max_concurrent:
         strategy_id = rule.get("parameters", {}).get("strategy_id")
         if strategy_id:
-            active = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status="RUNNING")
+            active = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status=ACTIVE_SESSION_STATUSES)
             if len(active) >= max_concurrent:
                 logger.info(
                     "Rule %s: max_concurrent_sessions %d reached (%d active)",

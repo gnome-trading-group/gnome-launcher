@@ -19,6 +19,11 @@ STRATEGY_PARAMS_SCHEMA: dict = {
     "strategy_class": {"type": "string"},
     "mode": {"type": "string", "enum": ["paper", "live"]},
     "research_commit": {"type": "string"},
+    "instance_type": {"type": "string"},
+    "latency_profile": {"type": "string", "enum": ["low_latency", "standard"]},
+    "orchestrator_version": {"type": "string"},
+    "gnomepy_version": {"type": "string"},
+    "availability_zone": {"type": "string"},
     "strategy_args": {
         "type": "object",
         "additionalProperties": True,
@@ -43,6 +48,11 @@ class ResolvedStrategyConfig:
     region: str | None = None
     strategy_args: dict[str, Any] = field(default_factory=dict)
     simulation_config: dict[str, Any] = field(default_factory=dict)
+    instance_type: str | None = None
+    latency_profile: str | None = None
+    orchestrator_version: str | None = None
+    gnomepy_version: str | None = None
+    availability_zone: str | None = None
 
     @classmethod
     def from_params(cls, params: dict, *, listings: list[int]) -> ResolvedStrategyConfig:
@@ -55,6 +65,11 @@ class ResolvedStrategyConfig:
             research_commit=params.get("research_commit"),
             strategy_args=params.get("strategy_args", {}),
             simulation_config=params.get("simulation_config", {}),
+            instance_type=params.get("instance_type"),
+            latency_profile=params.get("latency_profile"),
+            orchestrator_version=params.get("orchestrator_version"),
+            gnomepy_version=params.get("gnomepy_version"),
+            availability_zone=params.get("availability_zone"),
         )
 
 

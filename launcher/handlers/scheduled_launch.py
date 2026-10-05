@@ -5,8 +5,8 @@ from gnomepy.registry import RegistryClient
 
 from launcher.config import config
 from launcher.dynamo import DynamoClient
-from launcher.handlers.trigger_processor import _build_session_config
 from launcher.rules.types import ResolvedStrategyConfig
+from launcher.sessions import create_session
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
@@ -33,13 +33,7 @@ def handler(event, context):
     session_id = str(uuid.uuid4())
 
     try:
-        registry.create_strategy_session(
-            session_id=session_id,
-            strategy_id=resolved_config.strategy_id,
-            mode=resolved_config.mode,
-            config=_build_session_config(resolved_config),
-            research_commit=resolved_config.research_commit,
-        )
+        create_session(registry, session_id, resolved_config)
         dynamo.update_request(request_id, status="LAUNCHED", session_id=session_id)
         session_url = f"{config.CONTROLLER_BASE_URL}/sessions/{session_id}"
         if request.get("slack_message_ts"):

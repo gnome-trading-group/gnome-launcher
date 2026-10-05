@@ -17,6 +17,7 @@ from launcher.rules.types import (
     register_rule_type,
     RuleType,
 )
+from launcher.sessions import ACTIVE_SESSION_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ class ClassifierEventRule(RuleType):
         if not strategy_id:
             return None
 
-        running_sessions = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status="RUNNING")
+        running_sessions = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status=ACTIVE_SESSION_STATUSES)
         if not running_sessions:
             return None
 

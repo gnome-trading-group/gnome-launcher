@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import uuid
-from typing import Any
 
 import boto3
 from gnomepy.registry import RegistryClient
@@ -16,6 +15,7 @@ from launcher.rules.direct_launch import DirectLaunchRule  # noqa: F401 — regi
 from launcher.rules.engine import evaluate_rules
 from launcher.rules.types import RULE_TYPE_REGISTRY, ResolvedStrategyConfig, RuleContext, RuleMatch, ScheduleResult
 from launcher.config import config
+from launcher.sessions import ACTIVE_SESSION_STATUSES, create_session
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
@@ -157,13 +157,7 @@ def _auto_launch(request: LaunchRequest, match: RuleMatch, ctx: RuleContext):
     resolved_config = match.evaluation.resolved_config
     session_id = str(uuid.uuid4())
     try:
-        ctx.registry.create_strategy_session(
-            session_id=session_id,
-            strategy_id=resolved_config.strategy_id,
-            mode=resolved_config.mode,
-            config=_build_session_config(resolved_config),
-            research_commit=resolved_config.research_commit,
-        )
+        create_session(ctx.registry, session_id, resolved_config)
         ctx.dynamo.update_request(request["request_id"], status="LAUNCHED", session_id=session_id)
         session_url = f"{config.CONTROLLER_BASE_URL}/sessions/{session_id}"
         msg_ts = ctx.slack.send_launch_notification(
@@ -203,27 +197,14 @@ def _request_approval(request: LaunchRequest, match: RuleMatch, ctx: RuleContext
     )
 
 
-def _build_session_config(resolved_config: ResolvedStrategyConfig) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "strategy.id": str(resolved_config.strategy_id),
-        "mode": resolved_config.mode,
-        "listings": resolved_config.listings,
-        "strategy.type": resolved_config.strategy_type,
-        "strategy.class": resolved_config.strategy_class,
-    }
-    for k, v in resolved_config.strategy_args.items():
-        result[f"strategy.args.{k}"] = v
-    for k, v in resolved_config.simulation_config.items():
-        result[k] = v
-    return result
-
-
 def _compute_dedup_key(rule_type: str, data: dict) -> str:
     content = json.dumps({"rule_type": rule_type, "data": data}, sort_keys=True)
     return hashlib.sha256(content.encode()).hexdigest()[:24]
 
 
 def _has_active_duplicate(resolved_config: ResolvedStrategyConfig, ctx: RuleContext) -> bool:
-    sessions = ctx.registry.get_strategy_sessions(strategy_id=resolved_config.strategy_id, status="RUNNING")
+    sessions = ctx.registry.get_strategy_sessions(
+        strategy_id=resolved_config.strategy_id, status=ACTIVE_SESSION_STATUSES
+    )
     target = set(resolved_config.listings)
     return any(set(s.config.get("listings", [])) == target for s in sessions)
