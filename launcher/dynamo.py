@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -24,6 +25,28 @@ def _ttl() -> int:
     return int(datetime.now(timezone.utc).timestamp()) + _TTL_DAYS * 86400
 
 
+# DynamoDB takes no floats and hands every number back as a Decimal, which neither a strategy's config nor the
+# registry's JSON body accepts, so numbers are converted at this boundary and nowhere else.
+def _to_dynamo(value):
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _to_dynamo(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_dynamo(v) for v in value]
+    return value
+
+
+def _from_dynamo(value):
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {k: _from_dynamo(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_from_dynamo(v) for v in value]
+    return value
+
+
 class DynamoClient:
     def __init__(self):
         dynamodb = boto3.resource("dynamodb")
@@ -39,7 +62,7 @@ class DynamoClient:
             ScanIndexForward=False,
             Limit=1,
         )
-        items = response.get("Items", [])
+        items = _from_dynamo(response.get("Items", []))
         if not items:
             return None
 
@@ -93,14 +116,14 @@ class DynamoClient:
             "date_modified": now,
             "ttl": _ttl(),
         }
-        self._requests.put_item(Item=item)
+        self._requests.put_item(Item=_to_dynamo(item))
         return item
 
     def update_request(self, request_id: str, **fields) -> LaunchRequest:
         fields["date_modified"] = _now()
         update_expr = "SET " + ", ".join(f"#f{i} = :v{i}" for i, _ in enumerate(fields))
         attr_names = {f"#f{i}": k for i, k in enumerate(fields)}
-        attr_values = {f":v{i}": v for i, v in enumerate(fields.values())}
+        attr_values = {f":v{i}": _to_dynamo(v) for i, v in enumerate(fields.values())}
         response = self._requests.update_item(
             Key={"request_id": request_id},
             UpdateExpression=update_expr,
@@ -108,11 +131,11 @@ class DynamoClient:
             ExpressionAttributeValues=attr_values,
             ReturnValues="ALL_NEW",
         )
-        return response["Attributes"]
+        return _from_dynamo(response["Attributes"])
 
     def get_request(self, request_id: str) -> LaunchRequest | None:
         response = self._requests.get_item(Key={"request_id": request_id})
-        return response.get("Item")
+        return _from_dynamo(response.get("Item"))
 
     def list_requests(self, status: str | None = None, rule_type: str | None = None, limit: int = 50) -> list[LaunchRequest]:
         if status:
@@ -122,7 +145,7 @@ class DynamoClient:
                 ScanIndexForward=False,
                 Limit=limit,
             )
-            return response.get("Items", [])
+            return _from_dynamo(response.get("Items", []))
 
         if rule_type:
             response = self._requests.query(
@@ -131,10 +154,10 @@ class DynamoClient:
                 ScanIndexForward=False,
                 Limit=limit,
             )
-            return response.get("Items", [])
+            return _from_dynamo(response.get("Items", []))
 
         response = self._requests.scan(Limit=limit)
-        return response.get("Items", [])
+        return _from_dynamo(response.get("Items", []))
 
     def get_latest_launch_for_rule(self, rule_id: str) -> LaunchRequest | None:
         response = self._requests.query(
@@ -146,7 +169,7 @@ class DynamoClient:
             ScanIndexForward=False,
             Limit=1,
         )
-        items = response.get("Items", [])
+        items = _from_dynamo(response.get("Items", []))
         return items[0] if items else None
 
     # ── Launch Rules ──────────────────────────────────────────────────────
@@ -156,15 +179,15 @@ class DynamoClient:
             IndexName="rule_type-status-index",
             KeyConditionExpression=Key("rule_type").eq(rule_type) & Key("status").eq("active"),
         )
-        return response.get("Items", [])
+        return _from_dynamo(response.get("Items", []))
 
     def get_rule(self, rule_id: str) -> LaunchRule | None:
         response = self._rules.get_item(Key={"rule_id": rule_id})
-        return response.get("Item")
+        return _from_dynamo(response.get("Item"))
 
     def list_rules(self) -> list[LaunchRule]:
         response = self._rules.scan()
-        return response.get("Items", [])
+        return _from_dynamo(response.get("Items", []))
 
     def create_rule(
         self,
@@ -196,14 +219,14 @@ class DynamoClient:
             "date_created": now,
             "date_modified": now,
         }
-        self._rules.put_item(Item=item)
+        self._rules.put_item(Item=_to_dynamo(item))
         return item
 
     def update_rule(self, rule_id: str, **fields) -> LaunchRule:
         fields["date_modified"] = _now()
         update_expr = "SET " + ", ".join(f"#f{i} = :v{i}" for i, _ in enumerate(fields))
         attr_names = {f"#f{i}": k for i, k in enumerate(fields)}
-        attr_values = {f":v{i}": v for i, v in enumerate(fields.values())}
+        attr_values = {f":v{i}": _to_dynamo(v) for i, v in enumerate(fields.values())}
         response = self._rules.update_item(
             Key={"rule_id": rule_id},
             UpdateExpression=update_expr,
@@ -211,7 +234,7 @@ class DynamoClient:
             ExpressionAttributeValues=attr_values,
             ReturnValues="ALL_NEW",
         )
-        return response["Attributes"]
+        return _from_dynamo(response["Attributes"])
 
     def delete_rule(self, rule_id: str):
         self._rules.delete_item(Key={"rule_id": rule_id})
