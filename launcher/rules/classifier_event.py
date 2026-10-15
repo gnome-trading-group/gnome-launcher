@@ -17,7 +17,7 @@ from launcher.rules.types import (
     register_rule_type,
     RuleType,
 )
-from launcher.sessions import ACTIVE_SESSION_STATUSES
+from launcher.sessions import ACTIVE_SESSION_STATUSES, listing_ids
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ class ClassifierEventRule(RuleType):
         target_session_ids = [
             s.session_id
             for s in running_sessions
-            if set(s.config.get("listings", [])) & resolved_listing_ids
+            if listing_ids(s.config.get("listings", [])) & resolved_listing_ids
         ]
         if not target_session_ids:
             return None

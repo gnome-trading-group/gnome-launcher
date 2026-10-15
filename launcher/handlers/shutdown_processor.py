@@ -4,9 +4,11 @@ import logging
 
 from gnomepy.registry import RegistryClient
 
+from launcher import alerts
 from launcher.config import config
 from launcher.dynamo import DynamoClient
 from launcher.rules.classifier_event import ClassifierEventRule  # noqa: F401 — registers rule type
+from launcher.rules.cs2 import CS2Rule  # noqa: F401 — registers rule type
 from launcher.rules.direct_launch import DirectLaunchRule  # noqa: F401 — registers rule type
 from launcher.rules.types import RULE_TYPE_REGISTRY, RuleContext
 from launcher.slack_client import SlackClient
@@ -85,7 +87,7 @@ def _auto_shutdown(request, rule, evaluation, ctx: RuleContext):
     errors = []
     for session_id in evaluation.target_session_ids:
         try:
-            ctx.registry.stop_strategy_session(session_id)
+            ctx.registry.stop_strategy_session_as_service(session_id, actor=f"launcher:{rule['name']}")
         except Exception as e:
             logger.exception("Failed to stop session %s", session_id)
             errors.append({"session_id": session_id, "error": str(e)})
@@ -96,23 +98,10 @@ def _auto_shutdown(request, rule, evaluation, ctx: RuleContext):
             status="STOP_FAILED",
             launch_error=json.dumps(errors),
         )
-        ctx.slack.send_shutdown_failure_notification(
-            rule_name=rule["name"],
-            errors=errors,
-        )
+        alerts.shutdown_failed(ctx.registry, rule["name"], errors)
     else:
         ctx.dynamo.update_request(request["request_id"], status="STOPPED")
-        msg_ts = ctx.slack.send_shutdown_notification(
-            rule_name=rule["name"],
-            reason=evaluation.reason,
-            session_ids=evaluation.target_session_ids,
-        )
-        if msg_ts:
-            ctx.dynamo.update_request(
-                request["request_id"],
-                slack_message_ts=msg_ts,
-                slack_channel=ctx.slack.channel,
-            )
+        alerts.stopped(ctx.registry, rule["name"], evaluation.reason, evaluation.target_session_ids)
 
 
 def _request_shutdown_approval(request, rule, evaluation, ctx: RuleContext):

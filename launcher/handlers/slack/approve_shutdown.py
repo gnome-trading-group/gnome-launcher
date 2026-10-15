@@ -26,7 +26,7 @@ def handler(event, context):
     errors = []
     for session_id in target_session_ids:
         try:
-            registry.stop_strategy_session(session_id)
+            registry.stop_strategy_session_as_service(session_id, actor=f"slack:{username}")
         except Exception as e:
             logger.exception("Failed to stop session %s", session_id)
             errors.append({"session_id": session_id, "error": str(e)})

@@ -19,6 +19,8 @@ interface Props extends cdk.StackProps {
 }
 
 export class LauncherSlackInteractionStack extends cdk.Stack {
+  public readonly interactionFn: lambda.DockerImageFunction;
+
   constructor(scope: Construct, id: string, props: Props) {
     super(scope, id, props);
 
@@ -33,7 +35,7 @@ export class LauncherSlackInteractionStack extends cdk.Stack {
 
     // ── Slack Interaction Lambda ──────────────────────────────────────────
 
-    const slackInteractionFn = new lambda.DockerImageFunction(this, 'SlackInteraction', {
+    const slackInteractionFn = this.interactionFn = new lambda.DockerImageFunction(this, 'SlackInteraction', {
       code: lambda.DockerImageCode.fromImageAsset(imageAsset, {
         cmd: ['launcher.handlers.slack.interaction.handler'],
       }),

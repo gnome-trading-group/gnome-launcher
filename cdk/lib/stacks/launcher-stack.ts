@@ -3,6 +3,8 @@ import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -13,6 +15,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { join } from 'path';
 import { Stage } from '@gnome-trading-group/gnome-shared-cdk';
+import { grantResearchTablesRead } from '../research-tables';
 
 interface Props extends cdk.StackProps {
   stage: Stage;
@@ -26,6 +29,9 @@ export class LauncherStack extends cdk.Stack {
   public readonly approveShutdownFn: lambda.DockerImageFunction;
   public readonly scheduledLaunchFunctionArn: string;
   public readonly schedulerRoleArn: string;
+  // For the monitoring stack's alarms.
+  public readonly queues: { name: string; queue: sqs.Queue; dlq: sqs.Queue }[];
+  public readonly processors: { name: string; fn: lambda.IFunction }[];
 
   constructor(scope: Construct, id: string, props: Props) {
     super(scope, id, props);
@@ -102,6 +108,12 @@ export class LauncherStack extends cdk.Stack {
       deadLetterQueue: { queue: shutdownDlq, maxReceiveCount: 3 },
     });
 
+    this.queues = [
+      { name: 'Launcher', queue: launcherQueue, dlq: launcherDlq },
+      { name: 'ClassifierAdapter', queue: classifierAdapterQueue, dlq: classifierAdapterDlq },
+      { name: 'Shutdown', queue: shutdownQueue, dlq: shutdownDlq },
+    ];
+
     // Subscribe to the classifier's SNS topic
     const classifierNotificationsTopic = sns.Topic.fromTopicArn(
       this,
@@ -133,6 +145,8 @@ export class LauncherStack extends cdk.Stack {
       REGISTRY_API_KEY_ID: registryApiKeyId,
       SLACK_BOT_TOKEN_SECRET: 'slack-bot-token',
       SLACK_CHANNEL_ID: props.slackChannelId,
+      // Where launches, stops and their failures are reported (the registry's alerting stack).
+      ALERTS_API_URL: ssm.StringParameter.valueForStringParameter(this, '/gnome/alerting/api-url'),
     };
 
     const createLambda = (
@@ -255,6 +269,41 @@ export class LauncherStack extends cdk.Stack {
     shutdownProcessorFn.addEventSource(
       new lambdaEventSources.SqsEventSource(shutdownQueue, { batchSize: 1 })
     );
+    // ── CS2 Scanner Lambda ────────────────────────────────────────────────
+
+    // Reads gnome-pipelines' cs2_upcoming_matches each time a cs2_upcoming run succeeds (gnome-pipelines' runner
+    // announces it on the default bus) and queues cs2 launch and shutdown triggers.
+    const cs2ScannerFn = createLambda(
+      'Cs2Scanner',
+      'launcher.handlers.custom.cs2_scanner.handler',
+      cdk.Duration.minutes(2),
+      1024,
+      {
+        LAUNCHER_QUEUE_URL: launcherQueue.queueUrl,
+        SHUTDOWN_QUEUE_URL: shutdownQueue.queueUrl,
+      },
+      (fn) => {
+        launcherQueue.grantSendMessages(fn);
+        shutdownQueue.grantSendMessages(fn);
+        grantResearchTablesRead(this, fn);
+      },
+    );
+    new events.Rule(this, 'Cs2ScannerOnUpcomingRun', {
+      eventPattern: {
+        source: ['gnome.pipelines'],
+        detailType: ['Pipeline Run Succeeded'],
+        detail: { pipeline: ['cs2_upcoming'] },
+      },
+      targets: [new targets.LambdaFunction(cs2ScannerFn, { retryAttempts: 0 })],
+    });
+
+    this.processors = [
+      { name: 'TriggerProcessor', fn: triggerProcessorFn },
+      { name: 'ShutdownProcessor', fn: shutdownProcessorFn },
+      { name: 'ScheduledLaunch', fn: scheduledLaunchFn },
+      { name: 'ClassifierAdapter', fn: classifierAdapterFn },
+      { name: 'Cs2Scanner', fn: cs2ScannerFn },
+    ];
 
     // ── API Trigger Lambda ────────────────────────────────────────────────
 

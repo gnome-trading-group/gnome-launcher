@@ -62,36 +62,6 @@ class SlackClient:
         })
         return result["ts"]
 
-    def send_launch_notification(
-        self,
-        rule_name: str,
-        reason: str,
-        config: ResolvedStrategyConfig,
-        session_id: str,
-        session_url: str,
-    ) -> str:
-        text = (
-            f":rocket: *Auto-launched:* {rule_name}\n"
-            f"*Strategy:* {config.strategy_class} (ID {config.strategy_id})\n"
-            f"*Mode:* {config.mode} | *Listings:* {', '.join(str(x) for x in config.listings)}\n"
-            f"*Reason:* {reason}\n"
-            f"<{session_url}|View session>"
-        )
-        result = _post("chat.postMessage", {
-            "channel": self.channel,
-            "text": text,
-        })
-        return result["ts"]
-
-    def send_failure_notification(self, rule_name: str, error: str):
-        try:
-            _post("chat.postMessage", {
-                "channel": self.channel,
-                "text": f":x: *Launch failed:* {rule_name}\nError: {error}",
-            })
-        except Exception:
-            logger.warning("Failed to send Slack failure notification", exc_info=True)
-
     def post_thread_reply(self, thread_ts: str, text: str):
         try:
             _post("chat.postMessage", {
@@ -125,34 +95,6 @@ class SlackClient:
             "blocks": blocks,
         })
         return result["ts"]
-
-    def send_shutdown_notification(
-        self,
-        rule_name: str,
-        reason: str,
-        session_ids: list[str],
-    ) -> str | None:
-        text = (
-            f":octagonal_sign: *Auto-stopped:* {rule_name}\n"
-            f"*Sessions:* {', '.join(session_ids)}\n"
-            f"*Reason:* {reason}"
-        )
-        try:
-            result = _post("chat.postMessage", {"channel": self.channel, "text": text})
-            return result["ts"]
-        except Exception:
-            logger.warning("Failed to send shutdown notification", exc_info=True)
-            return None
-
-    def send_shutdown_failure_notification(self, rule_name: str, errors: list[dict]):
-        try:
-            error_text = "\n".join(f"• {e['session_id']}: {e['error']}" for e in errors)
-            _post("chat.postMessage", {
-                "channel": self.channel,
-                "text": f":x: *Shutdown failed:* {rule_name}\n{error_text}",
-            })
-        except Exception:
-            logger.warning("Failed to send shutdown failure notification", exc_info=True)
 
     def send_scheduled_launch_message(
         self,

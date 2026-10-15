@@ -6,6 +6,7 @@ import { Stage } from '@gnome-trading-group/gnome-shared-cdk';
 import { CONFIGS, GITHUB_BRANCH, GITHUB_REPO, LauncherConfig } from './config';
 import { LauncherStack } from './stacks/launcher-stack';
 import { LauncherSlackInteractionStack } from './stacks/slack-interaction-stack';
+import { LauncherMonitoringStack } from './stacks/monitoring-stack';
 
 
 class AppStage extends cdk.Stage {
@@ -17,7 +18,7 @@ class AppStage extends cdk.Stage {
       slackChannelId: config.slackChannelId,
     });
 
-    new LauncherSlackInteractionStack(this, 'LauncherSlackInteractionStack', {
+    const interactionStack = new LauncherSlackInteractionStack(this, 'LauncherSlackInteractionStack', {
       stage: config.account.stage,
       slackChannelId: config.slackChannelId,
       approveLaunchFn: launcherStack.approveLaunchFn,
@@ -26,6 +27,11 @@ class AppStage extends cdk.Stage {
       schedulerRoleArn: launcherStack.schedulerRoleArn,
       requestsTableName: 'gnome-launch-requests',
       rulesTableName: 'gnome-launch-rules',
+    });
+
+    new LauncherMonitoringStack(this, 'LauncherMonitoringStack', {
+      queues: launcherStack.queues,
+      functions: [...launcherStack.processors, { name: 'SlackInteraction', fn: interactionStack.interactionFn }],
     });
   }
 }

@@ -8,14 +8,16 @@ import uuid
 import boto3
 from gnomepy.registry import RegistryClient
 
+from launcher import alerts
 from launcher.dynamo import DynamoClient
 from launcher.models import LaunchRequest, LaunchRule
 from launcher.rules.classifier_event import ClassifierEventRule  # noqa: F401 — registers rule type
+from launcher.rules.cs2 import CS2Rule  # noqa: F401 — registers rule type
 from launcher.rules.direct_launch import DirectLaunchRule  # noqa: F401 — registers rule type
 from launcher.rules.engine import evaluate_rules
 from launcher.rules.types import RULE_TYPE_REGISTRY, ResolvedStrategyConfig, RuleContext, RuleMatch, ScheduleResult
 from launcher.config import config
-from launcher.sessions import ACTIVE_SESSION_STATUSES, create_session
+from launcher.sessions import ACTIVE_SESSION_STATUSES, create_session, listing_ids
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
@@ -134,7 +136,8 @@ def _schedule_launch(rule_type, dedup_key, data, match, resolved_dict, schedule_
     except Exception:
         logger.exception("Failed to create EventBridge schedule for request %s", request["request_id"])
         ctx.dynamo.update_request(request["request_id"], status="FAILED", launch_error="Failed to create schedule")
-        ctx.slack.send_failure_notification(rule_name=match.rule["name"], error="Failed to create EventBridge schedule")
+        alerts.launch_failed(ctx.registry, match.rule["name"], request["request_id"], "Failed to create the EventBridge schedule",
+                             match.evaluation.resolved_config)
         return
 
     msg_ts = ctx.slack.send_scheduled_launch_message(
@@ -159,25 +162,13 @@ def _auto_launch(request: LaunchRequest, match: RuleMatch, ctx: RuleContext):
     try:
         create_session(ctx.registry, session_id, resolved_config)
         ctx.dynamo.update_request(request["request_id"], status="LAUNCHED", session_id=session_id)
-        session_url = f"{config.CONTROLLER_BASE_URL}/sessions/{session_id}"
-        msg_ts = ctx.slack.send_launch_notification(
-            rule_name=match.rule["name"],
-            reason=match.evaluation.reason,
-            config=resolved_config,
-            session_id=session_id,
-            session_url=session_url,
-        )
-        ctx.dynamo.update_request(
-            request["request_id"],
-            slack_message_ts=msg_ts,
-            slack_channel=ctx.slack.channel,
-        )
+        alerts.launched(ctx.registry, match.rule["name"], match.evaluation.reason, resolved_config, session_id)
     except Exception as e:
         logger.exception("Launch failed for request %s", request["request_id"])
         ctx.dynamo.update_request(
             request["request_id"], status="FAILED", launch_error=str(e),
         )
-        ctx.slack.send_failure_notification(rule_name=match.rule["name"], error=str(e))
+        alerts.launch_failed(ctx.registry, match.rule["name"], request["request_id"], e, resolved_config)
 
 
 def _request_approval(request: LaunchRequest, match: RuleMatch, ctx: RuleContext, schedule_result: ScheduleResult | None = None):
@@ -202,9 +193,15 @@ def _compute_dedup_key(rule_type: str, data: dict) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:24]
 
 
+# The registry refuses a session whose listings overlap another session of the same strategy and mode that still
+# holds them (a stopping session keeps its listings until its process is gone), so skip it here instead of failing.
 def _has_active_duplicate(resolved_config: ResolvedStrategyConfig, ctx: RuleContext) -> bool:
     sessions = ctx.registry.get_strategy_sessions(
-        strategy_id=resolved_config.strategy_id, status=ACTIVE_SESSION_STATUSES
+        strategy_id=resolved_config.strategy_id, status=f"{ACTIVE_SESSION_STATUSES},STOPPING"
     )
-    target = set(resolved_config.listings)
-    return any(set(s.config.get("listings", [])) == target for s in sessions)
+    target = listing_ids(resolved_config.listings)
+    return any(
+        getattr(s, "mode", resolved_config.mode) == resolved_config.mode
+        and listing_ids(s.config.get("listings", [])) & target
+        for s in sessions
+    )

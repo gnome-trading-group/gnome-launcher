@@ -11,6 +11,13 @@ from launcher.rules.types import ResolvedStrategyConfig
 ACTIVE_SESSION_STATUSES = "SUBMITTED,STARTING,RUNNING"
 
 
+def listing_ids(value) -> set[int]:
+    """A session config's listings, which come back as a list or as a comma-separated string."""
+    if isinstance(value, str):
+        return {int(part) for part in value.split(",") if part.strip()}
+    return {int(listing) for listing in value or []}
+
+
 def build_session_config(resolved_config: ResolvedStrategyConfig) -> dict[str, Any]:
     result: dict[str, Any] = {
         "strategy.id": str(resolved_config.strategy_id),

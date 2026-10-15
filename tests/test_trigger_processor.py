@@ -21,7 +21,6 @@ def _make_ctx(rules=None, existing_request=None, active_sessions=None):
     ctx.dynamo.update_request.return_value = {}
     ctx.registry.get_strategy_sessions.return_value = active_sessions or []
     ctx.registry.create_strategy_session.return_value = None
-    ctx.slack.send_launch_notification.return_value = "ts-123"
     ctx.slack.send_approval_message.return_value = "ts-456"
     ctx.slack.channel = "C123"
     return ctx
@@ -83,7 +82,9 @@ def test_auto_launch_creates_request_and_launches():
     _process({"rule_type": "test_proc_match", "data": {}}, ctx)
     ctx.dynamo.create_launch_request.assert_called_once()
     ctx.registry.create_strategy_session.assert_called_once()
-    ctx.slack.send_launch_notification.assert_called_once()
+    ctx.registry.send_alert.assert_called_once()
+    assert ctx.registry.send_alert.call_args.args[0] == "LAUNCH_SUCCEEDED"
+    assert ctx.registry.send_alert.call_args.kwargs["actor"] == "launcher:Test Rule"
 
 
 def test_approval_path_sends_slack_message():
@@ -103,6 +104,25 @@ def test_skips_when_active_session_has_same_listings():
     ctx.dynamo.create_launch_request.assert_not_called()
 
 
+def test_skips_when_active_session_overlaps_one_listing():
+    ctx = _make_ctx(rules=[_make_rule()], active_sessions=[SimpleNamespace(mode="paper", config={"listings": [2, 99]})])
+    from launcher.handlers.trigger_processor import _has_active_duplicate
+    assert _has_active_duplicate(_make_resolved_config(listings=[1, 2]), ctx)
+
+
+def test_launches_when_overlapping_session_is_in_another_mode():
+    ctx = _make_ctx(rules=[_make_rule()], active_sessions=[SimpleNamespace(mode="live", config={"listings": [1, 2]})])
+    from launcher.handlers.trigger_processor import _has_active_duplicate
+    assert not _has_active_duplicate(_make_resolved_config(listings=[1, 2]), ctx)
+
+
+def test_counts_stopping_sessions_as_still_holding_their_listings():
+    ctx = _make_ctx(rules=[_make_rule()])
+    from launcher.handlers.trigger_processor import _has_active_duplicate
+    _has_active_duplicate(_make_resolved_config(), ctx)
+    assert "STOPPING" in ctx.registry.get_strategy_sessions.call_args.kwargs["status"]
+
+
 def test_launches_when_active_session_has_different_listings():
     ctx = _make_ctx(
         rules=[_make_rule(launch_path="auto")],
@@ -118,7 +138,9 @@ def test_failed_launch_updates_status_and_notifies():
     _process({"rule_type": "test_proc_match", "data": {}}, ctx)
     all_kwargs = [call.kwargs for call in ctx.dynamo.update_request.call_args_list]
     assert any(kw.get("status") == "FAILED" for kw in all_kwargs)
-    ctx.slack.send_failure_notification.assert_called_once()
+    ctx.registry.send_alert.assert_called_once()
+    assert ctx.registry.send_alert.call_args.args[0] == "LAUNCH_FAILED"
+    assert ctx.registry.send_alert.call_args.kwargs["body"] == "ECS failed"
 
 
 def test_multiple_matching_rules_all_fire():

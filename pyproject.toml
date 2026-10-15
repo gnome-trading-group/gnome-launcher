@@ -6,7 +6,8 @@ packages = [{include = "launcher"}]
 
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
-gnomepy = "^2.5.0"
+# live-data: the cs2 scanner reads gnome-pipelines' datasets through gnomepy.data.
+gnomepy = {version = "^2.24.0", extras = ["live-data"]}
 boto3 = "*"
 requests = "*"
 anthropic = "*"
