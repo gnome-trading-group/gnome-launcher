@@ -9,6 +9,7 @@ from gnomepy.registry import RegistryClient
 
 from launcher import alerts, lifecycle
 from launcher.dynamo import DynamoClient
+from launcher.links import request_links
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
 from launcher.rules.types import NoMatch, RuleContext
 from launcher.rules.validation import validate_data
@@ -61,12 +62,13 @@ def process(message: dict, ctx: RuleContext) -> None:
             continue
 
         shutdown_path = rule.get("shutdown_path") or "auto"
+        links = request_links(rule_type, data, rule["parameters"].get("strategy_id"), [], ctx.registry)
         request = ctx.dynamo.create_launch_request(
             rule_type=rule_type, data=data, dedup_key=key, resolved_config={},
             matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"], launch_path=shutdown_path,
             status="STOPPING" if shutdown_path == "auto" else "PENDING_SHUTDOWN_APPROVAL",
             actor=lifecycle.AUTO_ACTOR, note=evaluation.reason, action="shutdown", target_session_ids=targets,
-            trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"),
+            trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"), links=links,
         )
         ctx.dynamo.record_evaluation(trigger, "REQUESTED", evaluation.reason, rule, request["request_id"])
         if shutdown_path == "auto":
@@ -74,7 +76,8 @@ def process(message: dict, ctx: RuleContext) -> None:
             continue
         try:
             ts = ctx.slack.send_shutdown_approval_message(
-                request_id=request["request_id"], rule_name=rule["name"], reason=evaluation.reason, session_ids=targets)
+                request_id=request["request_id"], rule_name=rule["name"], rule_id=rule["rule_id"],
+                reason=evaluation.reason, session_ids=targets, links=links)
         except Exception:
             logger.exception("Couldn't post the shutdown approval for %s to Slack", request["request_id"])
             continue

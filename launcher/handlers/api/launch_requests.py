@@ -2,7 +2,7 @@
 
     GET  /launch-requests?rule_id=&rule_type=&status=&action=&before=&limit=   newest first; page with before=
     GET  /launch-requests/{id}                                                 the request and its trigger's log
-    POST /launch-requests/{id}/approve|reject|cancel|retry
+    POST /launch-requests/{id}/approve|reject|cancel|retry|resend
 
 Approving here does what a Slack click does (the same conditional transition, then the same approve Lambda), so
 the two can race safely: whichever lands second is told the request has moved on.
@@ -10,14 +10,18 @@ the two can race safely: whichever lands second is told the request has moved on
 import json
 import logging
 import os
+from datetime import datetime
 
 import boto3
+from gnomepy.registry import RegistryClient
 
 from launcher import lifecycle
 from launcher.dynamo import DynamoClient
 from launcher.handlers.api.http import actor, api_handler, error, ok, query_int
+from launcher.links import request_links
 from launcher.models import LaunchRequest
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
+from launcher.rules.types import ResolvedStrategyConfig
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
@@ -62,6 +66,8 @@ def handler(event, context):
         return _cancel(request, who, dynamo)
     if action == "retry":
         return _retry(request, who, dynamo)
+    if action == "resend":
+        return _resend(request, who, dynamo)
     return error(400, f"Unknown action: {action}")
 
 
@@ -130,7 +136,41 @@ def _retry(request: LaunchRequest, who: str, dynamo: DynamoClient):
         resolved_config=request["resolved_config"], matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"],
         launch_path="approval", status="APPROVED", actor=who, note=f"retry of {request['request_id']}",
         trigger_id=request.get("trigger_id"), rule_revision=request.get("rule_revision"),
-        retry_of=request["request_id"],
+        retry_of=request["request_id"], links=request.get("links"),
     )
     _invoke(APPROVE_LAUNCH_FUNCTION_NAME, retry["request_id"], who)
     return ok(retry, 202)
+
+
+def _resend(request: LaunchRequest, who: str, dynamo: DynamoClient):
+    """Posts a pending request's approval message again, as a new message, and retires the old one's buttons. A
+    request made before links were stored gets them now."""
+    if request["status"] not in ("PENDING_APPROVAL", "PENDING_SHUTDOWN_APPROVAL"):
+        return error(409, f"Only a request awaiting approval can be resent; this one is {request['status']}")
+    slack = SlackClient()
+    if not slack.channel:
+        return error(409, "Slack isn't set up on this stage")
+    links = request.get("links")
+    if links is None:
+        rule = dynamo.get_rule(request["matched_rule_id"])
+        strategy_id = (request["resolved_config"] or {}).get("strategy_id") or (rule or {}).get("parameters", {}).get("strategy_id")
+        links = request_links(request["rule_type"], request["data"], strategy_id,
+                              (request["resolved_config"] or {}).get("listings", []), RegistryClient())
+        dynamo.annotate(request["request_id"], links=links)
+    events = request.get("events") or [{}]
+    reason = events[0].get("note") or request["matched_rule_name"]
+    if request["status"] == "PENDING_APPROVAL":
+        scheduled = request.get("scheduled_time")
+        ts = slack.send_approval_message(
+            request_id=request["request_id"], rule_name=request["matched_rule_name"],
+            rule_id=request["matched_rule_id"], reason=reason, config=ResolvedStrategyConfig(**request["resolved_config"]),
+            links=links, scheduled_time=datetime.fromisoformat(scheduled) if scheduled else None,
+        )
+    else:
+        ts = slack.send_shutdown_approval_message(
+            request_id=request["request_id"], rule_name=request["matched_rule_name"],
+            rule_id=request["matched_rule_id"], reason=reason, session_ids=request.get("target_session_ids") or [],
+            links=links,
+        )
+    _resolve_slack(request, f"Resent by {who}; use the newer message")
+    return ok(dynamo.annotate(request["request_id"], slack_message_ts=ts, slack_channel=slack.channel))

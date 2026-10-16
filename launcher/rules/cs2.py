@@ -32,6 +32,8 @@ from launcher.sessions import ACTIVE_SESSION_STATUSES, listing_ids
 logger = logging.getLogger(__name__)
 
 VENUES = ("polymarket", "kalshi", "polymarket_us")
+# HLTV ignores the slug but needs one: /matches/<id>/ alone serves the home page.
+HLTV_MATCH_URL = "https://www.hltv.org/matches/{match_id}/match"
 MARKETS = ("series", "game1")
 DEFAULT_MARKET = "series"
 
@@ -89,6 +91,9 @@ class CS2Rule(RuleType):
         }
         return RuleEvaluation(should_launch=True, resolved_config=config,
                               reason=f"CS2 match {data['match_id']} {market} on {venue}")
+
+    def links(self, data: dict) -> list[dict]:
+        return [{"label": f"HLTV match {data['match_id']}", "url": HLTV_MATCH_URL.format(match_id=int(data["match_id"]))}]
 
     def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | NoMatch:
         if data["market"] != params.get("market", DEFAULT_MARKET):

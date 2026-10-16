@@ -381,12 +381,17 @@ export class LauncherStack extends cdk.Stack {
       512,
       {},
       (fn) => {
-        // Approve, reject, cancel and retry write requests; retry reads the rule; cancel deletes the schedule;
-        // both settle the request's Slack message. Invoking the approve Lambdas is granted below, once they exist.
+        // Approve, reject, cancel, retry and resend write requests; retry and resend read the rule; cancel deletes
+        // the schedule; each settles the request's Slack message, and resend looks up an older request's links in
+        // the registry. Invoking the approve Lambdas is granted below, once they exist.
         requestsTable.grantReadWriteData(fn);
         rulesTable.grantReadData(fn);
         triggersTable.grantReadData(fn);
         slackBotTokenSecret.grantRead(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
         fn.addToRolePolicy(new iam.PolicyStatement({
           actions: ['scheduler:DeleteSchedule'],
           resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/launcher-*`],

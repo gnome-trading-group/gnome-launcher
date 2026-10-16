@@ -28,7 +28,7 @@ TRACKING_OPEN = "open"
 # Free-form JSON is stored as a string: DynamoDB takes no floats and returns every number as a Decimal, so a nested
 # map would come back with 2.0 turned into 2 and every number in a type neither strategies nor the registry accept.
 RULE_JSON_FIELDS = ("parameters",)
-REQUEST_JSON_FIELDS = ("data", "resolved_config")
+REQUEST_JSON_FIELDS = ("data", "resolved_config", "links")
 TRIGGER_JSON_FIELDS = ("data",)
 REVISION_JSON_FIELDS = ("rule",)
 
@@ -110,6 +110,7 @@ class DynamoClient:
         trigger_id: str | None = None,
         rule_revision: int | None = None,
         retry_of: str | None = None,
+        links: dict | None = None,
     ) -> LaunchRequest:
         now = _now()
         item: LaunchRequest = {
@@ -135,6 +136,7 @@ class DynamoClient:
             "scheduled_time": scheduled_time,
             "schedule_name": None,
             "launch_error": None,
+            "links": links,
             "events": [_event(status, actor, note)],
             "date_created": now,
             "date_modified": now,
@@ -183,7 +185,8 @@ class DynamoClient:
     def annotate(self, request_id: str, **fields) -> LaunchRequest:
         """Sets fields that don't change the request's status (its Slack message, schedule name), on an existing request."""
         names = {f"#f{i}": key for i, key in enumerate(fields)}
-        values = {f":v{i}": value for i, value in enumerate(fields.values())}
+        values = {f":v{i}": json.dumps(value) if key in REQUEST_JSON_FIELDS else value
+                  for i, (key, value) in enumerate(fields.items())}
         values[":now"] = _now()
         response = self._requests.update_item(
             Key={"request_id": request_id},

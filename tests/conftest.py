@@ -69,6 +69,13 @@ class FakeRegistry:
         self.stopped: list[tuple[str, str]] = []
         self.stop_reasons: list[str | None] = []
         self.on_create = None
+        # Security master rows for request links; empty unless a test adds them.
+        self.listings: dict[int, SimpleNamespace] = {}
+        self.contracts: list[SimpleNamespace] = []
+        self.events: dict[int, SimpleNamespace] = {}
+        self.exchanges: dict[int, SimpleNamespace] = {}
+        self.strategies: dict[int, SimpleNamespace] = {}
+        self.securities: dict[int, SimpleNamespace] = {}
 
     def create_strategy_session(self, session_id, strategy_id, mode, config, **kwargs):
         if self.on_create:
@@ -96,7 +103,22 @@ class FakeRegistry:
         session.status, session.stopped_by, session.stop_reason = "STOPPING", actor, reason
 
     def get_listing(self, listing_id=None, **_):
-        return [SimpleNamespace(listing_id=listing_id)]
+        return [self.listings.get(listing_id) or SimpleNamespace(listing_id=listing_id, security_id=None, exchange_id=None)]
+
+    def get_security(self, security_id=None, **_):
+        return [self.securities[security_id]] if security_id in self.securities else []
+
+    def get_event_contracts(self, security_id=None, **_):
+        return [c for c in self.contracts if c.security_id == security_id]
+
+    def get_event(self, event_id=None, **_):
+        return [self.events[event_id]] if event_id in self.events else []
+
+    def get_exchange(self, exchange_id=None, **_):
+        return [self.exchanges[exchange_id]] if exchange_id in self.exchanges else []
+
+    def get_strategies(self, strategy_id=None, **_):
+        return [self.strategies[strategy_id]] if strategy_id in self.strategies else []
 
     def send_alert(self, alert_type, title, **fields):
         self.alerts.append({"type": alert_type, "title": title, **fields})

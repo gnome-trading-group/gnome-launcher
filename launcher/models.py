@@ -51,6 +51,8 @@ class LaunchRequest(TypedDict):
     scheduled_time: str | None
     schedule_name: str | None
     launch_error: str | None
+    # See launcher.links; None on requests made before links were stored.
+    links: dict | None
     events: list[RequestEvent]
     # Copied from the session by the sweeper while it runs; `tracking` is set until the session has ended.
     tracking: str | None

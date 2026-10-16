@@ -9,6 +9,7 @@ import uuid
 from gnomepy.registry import RegistryClient
 
 from launcher import alerts, lifecycle
+from launcher.links import request_links
 from launcher.dynamo import DynamoClient
 from launcher.models import LaunchRequest, LaunchRule
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
@@ -80,13 +81,15 @@ def _start(rule: LaunchRule, evaluation: RuleEvaluation, trigger: dict, key: str
         status = "PENDING_APPROVAL"
     else:
         status = "SCHEDULED" if schedule else "LAUNCHING"
+    config = evaluation.resolved_config
+    links = request_links(rule["rule_type"], data, config.strategy_id, config.listings, ctx.registry)
     request = ctx.dynamo.create_launch_request(
         rule_type=rule["rule_type"], data=data, dedup_key=key,
         resolved_config=dataclasses.asdict(evaluation.resolved_config),
         matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"], launch_path=launch_path,
         status=status, actor=lifecycle.AUTO_ACTOR, note=evaluation.reason,
         scheduled_time=schedule.scheduled_time.isoformat() if schedule else None,
-        trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"),
+        trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"), links=links,
     )
 
     if status == "LAUNCHING":
@@ -107,8 +110,8 @@ def _schedule(request, rule: LaunchRule, evaluation: RuleEvaluation, schedule, c
         return
     ctx.dynamo.annotate(request["request_id"], schedule_name=name)
     ts = ctx.slack.send_scheduled_launch_message(
-        request_id=request["request_id"], rule_name=rule["name"], reason=evaluation.reason,
-        config=evaluation.resolved_config, scheduled_time=schedule.scheduled_time,
+        request_id=request["request_id"], rule_name=rule["name"], rule_id=rule["rule_id"], reason=evaluation.reason,
+        config=evaluation.resolved_config, links=request["links"], scheduled_time=schedule.scheduled_time,
         schedule_reason=schedule.reason, launch_path="auto",
     )
     if ts:
@@ -118,8 +121,8 @@ def _schedule(request, rule: LaunchRule, evaluation: RuleEvaluation, schedule, c
 def _request_approval(request, rule: LaunchRule, evaluation: RuleEvaluation, schedule, ctx: RuleContext) -> None:
     try:
         ts = ctx.slack.send_approval_message(
-            request_id=request["request_id"], rule_name=rule["name"], reason=evaluation.reason,
-            config=evaluation.resolved_config,
+            request_id=request["request_id"], rule_name=rule["name"], rule_id=rule["rule_id"], reason=evaluation.reason,
+            config=evaluation.resolved_config, links=request["links"],
             scheduled_time=schedule.scheduled_time if schedule else None,
             schedule_reason=schedule.reason if schedule else None,
         )

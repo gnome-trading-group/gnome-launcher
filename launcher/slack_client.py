@@ -6,12 +6,19 @@ from datetime import datetime
 import boto3
 import requests
 
+from launcher.links import listing_url, request_url, rule_url, session_url, strategy_url
 from launcher.rules.types import ResolvedStrategyConfig
 
 logger = logging.getLogger(__name__)
 
 SLACK_BOT_TOKEN_SECRET = os.environ.get("SLACK_BOT_TOKEN_SECRET", "slack-bot-token")
 SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "")
+# Slack refuses a field over 2000 characters or a text over 3000, so a request with many listings or events shows the
+# first few and points at the controller, which shows everything.
+MAX_TITLES = 3
+MAX_LISTINGS = 10
+MAX_PAGES = 10
+MAX_LABEL = 80
 
 _cached_token: str | None = None
 
@@ -52,14 +59,17 @@ class SlackClient:
         self,
         request_id: str,
         rule_name: str,
+        rule_id: str,
         reason: str,
         config: ResolvedStrategyConfig,
+        links: dict,
         scheduled_time: datetime | None = None,
         schedule_reason: str | None = None,
     ) -> str | None:
         if not self.channel:
             return None
-        blocks = _build_approval_blocks(request_id, rule_name, reason, config, scheduled_time, schedule_reason)
+        blocks = _build_approval_blocks(request_id, rule_name, rule_id, reason, config, links, scheduled_time,
+                                        schedule_reason)
         result = _post("chat.postMessage", {
             "channel": self.channel,
             "text": f"Strategy launch approval needed: {rule_name}",
@@ -94,12 +104,14 @@ class SlackClient:
         self,
         request_id: str,
         rule_name: str,
+        rule_id: str,
         reason: str,
         session_ids: list[str],
+        links: dict,
     ) -> str | None:
         if not self.channel:
             return None
-        blocks = _build_shutdown_approval_blocks(request_id, rule_name, reason, session_ids)
+        blocks = _build_shutdown_approval_blocks(request_id, rule_name, rule_id, reason, session_ids, links)
         result = _post("chat.postMessage", {
             "channel": self.channel,
             "text": f"Strategy shutdown approval needed: {rule_name}",
@@ -111,8 +123,10 @@ class SlackClient:
         self,
         request_id: str,
         rule_name: str,
+        rule_id: str,
         reason: str,
         config: ResolvedStrategyConfig,
+        links: dict,
         scheduled_time: datetime,
         schedule_reason: str,
         launch_path: str,
@@ -120,7 +134,7 @@ class SlackClient:
         if not self.channel:
             return None
         blocks = _build_scheduled_launch_blocks(
-            request_id, rule_name, reason, config, scheduled_time, schedule_reason, launch_path
+            request_id, rule_name, rule_id, reason, config, links, scheduled_time, schedule_reason, launch_path
         )
         result = _post("chat.postMessage", {
             "channel": self.channel,
@@ -162,165 +176,129 @@ class SlackClient:
         })
 
 
+def _button(text: str, action_id: str, request_id: str, style: str | None = None) -> dict:
+    button = {"type": "button", "text": {"type": "plain_text", "text": text}, "action_id": action_id, "value": request_id}
+    if style:
+        button["style"] = style
+    return button
+
+
 def _build_approval_blocks(
     request_id: str,
     rule_name: str,
+    rule_id: str,
     reason: str,
     config: ResolvedStrategyConfig,
+    links: dict,
     scheduled_time: datetime | None = None,
     schedule_reason: str | None = None,
 ) -> list[dict]:
-    fields = [
-        {"type": "mrkdwn", "text": f"*Rule:*\n{rule_name}"},
-        {"type": "mrkdwn", "text": f"*Strategy:*\n{config.strategy_class} (ID {config.strategy_id})"},
-        {"type": "mrkdwn", "text": f"*Mode:*\n{config.mode}"},
-        {"type": "mrkdwn", "text": f"*Listings:*\n{', '.join(str(x) for x in config.listings)}"},
-    ]
+    fields = _launch_fields(rule_name, rule_id, config, links)
     if scheduled_time:
-        time_str = scheduled_time.strftime("%Y-%m-%d %H:%M UTC")
-        fields.append({"type": "mrkdwn", "text": f"*Scheduled Time:*\n{time_str}"})
+        fields.append(_field("Launches at", _when(scheduled_time)))
         if schedule_reason:
-            fields.append({"type": "mrkdwn", "text": f"*Why:*\n{schedule_reason}"})
-
-    action_buttons = [
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Approve"},
-            "style": "primary",
-            "action_id": "launch_approve",
-            "value": request_id,
-        },
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Reject"},
-            "style": "danger",
-            "action_id": "launch_reject",
-            "value": request_id,
-        },
-    ]
+            fields.append(_field("Why then", schedule_reason))
+    buttons = [_button("Approve", "launch_approve", request_id, "primary"),
+               _button("Reject", "launch_reject", request_id, "danger")]
     if scheduled_time:
-        action_buttons.append({
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Modify Time"},
-            "action_id": "schedule_modify",
-            "value": request_id,
-        })
-
-    return [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "Strategy Launch Request"},
-        },
-        {
-            "type": "section",
-            "fields": fields,
-        },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Reason:*\n{reason}"},
-        },
-        {
-            "type": "actions",
-            "elements": action_buttons,
-        },
-    ]
+        buttons.append(_button("Modify time", "schedule_modify", request_id))
+    return _message(":rocket: Launch approval needed", reason, fields, links, request_id, buttons)
 
 
 def _build_shutdown_approval_blocks(
     request_id: str,
     rule_name: str,
+    rule_id: str,
     reason: str,
     session_ids: list[str],
+    links: dict,
 ) -> list[dict]:
-    return [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "Strategy Shutdown Request"},
-        },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Rule:*\n{rule_name}"},
-                {"type": "mrkdwn", "text": f"*Sessions:*\n{', '.join(session_ids)}"},
-            ],
-        },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Reason:*\n{reason}"},
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Stop Sessions"},
-                    "style": "danger",
-                    "action_id": "shutdown_approve",
-                    "value": request_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Keep Running"},
-                    "action_id": "shutdown_reject",
-                    "value": request_id,
-                },
-            ],
-        },
-    ]
+    fields = [_rule_field(rule_name, rule_id)]
+    if links.get("strategy"):
+        fields.append(_field("Strategy", _anchor(links["strategy"]["label"], links["strategy"]["url"])))
+    fields.append(_field("Sessions", "\n".join(_capped([_anchor(sid, session_url(sid)) for sid in session_ids],
+                                                         MAX_LISTINGS))))
+    buttons = [_button("Stop sessions", "shutdown_approve", request_id, "danger"),
+               _button("Keep running", "shutdown_reject", request_id)]
+    return _message(":octagonal_sign: Shutdown approval needed", reason, fields, links, request_id, buttons)
 
 
 def _build_scheduled_launch_blocks(
     request_id: str,
     rule_name: str,
+    rule_id: str,
     reason: str,
     config: ResolvedStrategyConfig,
+    links: dict,
     scheduled_time: datetime,
     schedule_reason: str,
     launch_path: str,
 ) -> list[dict]:
-    time_str = scheduled_time.strftime("%Y-%m-%d %H:%M UTC")
     approval_note = " (approval required at launch)" if launch_path == "approval" else ""
+    fields = _launch_fields(rule_name, rule_id, config, links)
+    fields.append(_field("Launches at", _when(scheduled_time) + approval_note))
+    fields.append(_field("Why then", schedule_reason))
+    buttons = [_button("Modify time", "schedule_modify", request_id),
+               _button("Cancel", "schedule_cancel", request_id, "danger")]
+    return _message(":calendar: Launch scheduled", reason, fields, links, request_id, buttons)
+
+
+def _message(title: str, reason: str, fields: list[dict], links: dict, request_id: str, buttons: list[dict]) -> list[dict]:
+    """Title, the trigger's reason as the headline (with what it trades), the request's facts, its pages on one line,
+    then the buttons."""
+    titles = [_escape(_clip(title)) for title in links.get("titles") or []]
+    headline = "\n".join([f"*{_escape(reason)}*", *_capped(titles, MAX_TITLES)])
     return [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "Strategy Launch Scheduled"},
-        },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Rule:*\n{rule_name}"},
-                {"type": "mrkdwn", "text": f"*Strategy:*\n{config.strategy_class} (ID {config.strategy_id})"},
-                {"type": "mrkdwn", "text": f"*Mode:*\n{config.mode}"},
-                {"type": "mrkdwn", "text": f"*Listings:*\n{', '.join(str(x) for x in config.listings)}"},
-            ],
-        },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Scheduled Time:*\n{time_str}{approval_note}"},
-                {"type": "mrkdwn", "text": f"*Why:*\n{schedule_reason}"},
-            ],
-        },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Trigger Reason:*\n{reason}"},
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Modify Time"},
-                    "action_id": "schedule_modify",
-                    "value": request_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Cancel"},
-                    "style": "danger",
-                    "action_id": "schedule_cancel",
-                    "value": request_id,
-                },
-            ],
-        },
+        {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": headline}},
+        {"type": "section", "fields": fields},
+        _links_context(links, request_id),
+        {"type": "divider"},
+        {"type": "actions", "elements": buttons},
     ]
+
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= MAX_LABEL else text[:MAX_LABEL - 1].rstrip() + "…"
+
+
+def _anchor(label: str, url: str) -> str:
+    return f"<{url}|{_escape(_clip(label))}>"
+
+
+def _capped(lines: list[str], limit: int) -> list[str]:
+    return lines if len(lines) <= limit else lines[:limit] + [f"_+{len(lines) - limit} more in the controller_"]
+
+
+def _field(name: str, value: str) -> dict:
+    return {"type": "mrkdwn", "text": f"*{name}*\n{value}"}
+
+
+def _when(at: datetime) -> str:
+    return at.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _rule_field(rule_name: str, rule_id: str) -> dict:
+    return _field("Rule", _anchor(rule_name, rule_url(rule_id)))
+
+
+def _launch_fields(rule_name: str, rule_id: str, config: ResolvedStrategyConfig, links: dict) -> list[dict]:
+    strategy = links.get("strategy") or {"label": f"Strategy {config.strategy_id}", "url": strategy_url(config.strategy_id)}
+    # A request made before links were stored still links its listings, by id.
+    listings = links.get("listings") or [{"label": str(lid), "url": listing_url(lid)} for lid in config.listings]
+    return [
+        _rule_field(rule_name, rule_id),
+        _field("Strategy", _anchor(strategy["label"], strategy["url"])),
+        _field("Mode", config.mode),
+        _field("Listings", "\n".join(_capped([_anchor(item["label"], item["url"]) for item in listings], MAX_LISTINGS))),
+    ]
+
+
+def _links_context(links: dict, request_id: str) -> dict:
+    pages = _capped([_anchor(page["label"], page["url"]) for page in links.get("pages") or []], MAX_PAGES)
+    pages.append(_anchor("Open in controller", request_url(request_id)))
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(pages)}]}

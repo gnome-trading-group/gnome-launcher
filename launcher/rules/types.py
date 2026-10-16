@@ -164,6 +164,10 @@ class RuleType:
         """Checks beyond parameter_schema; each problem as one message."""
         return []
 
+    def links(self, data: dict) -> list[dict]:
+        """Pages about what a trigger is for, beyond its listings' (which every request gets), as {label, url}."""
+        return []
+
 
 RULE_TYPE_REGISTRY: dict[str, type[RuleType]] = {}
 
