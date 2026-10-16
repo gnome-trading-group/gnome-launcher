@@ -20,14 +20,18 @@ def test_active_statuses_include_the_boot_window():
 
 
 def test_latency_profile_travels_in_the_session_config():
-    assert build_session_config(_config(latency_profile="standard"))["latency.profile"] == "standard"
-    assert "latency.profile" not in build_session_config(_config())
+    assert build_session_config(_config(latency_profile="standard"), "r1")["latency.profile"] == "standard"
+    assert "latency.profile" not in build_session_config(_config(), "r1")
+
+
+def test_every_session_is_stamped_with_the_rule_that_launched_it():
+    assert build_session_config(_config(), "rule-9")["launcher.rule.id"] == "rule-9"
 
 
 def test_create_session_leaves_out_unset_fields():
     registry = MagicMock()
 
-    create_session(registry, "s1", _config())
+    create_session(registry, "s1", _config(), "r1")
 
     kwargs = registry.create_strategy_session.call_args.kwargs
     assert kwargs.keys() == {"session_id", "strategy_id", "mode", "config"}
@@ -46,6 +50,7 @@ def test_create_session_passes_set_fields():
             gnomepy_version="2.20.2",
             availability_zone="us-east-1b",
         ),
+        "r1",
     )
 
     kwargs = registry.create_strategy_session.call_args.kwargs

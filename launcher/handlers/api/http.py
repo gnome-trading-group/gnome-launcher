@@ -17,11 +17,14 @@ def ok(body: Any, status: int = 200) -> dict:
     }
 
 
-def error(status: int, message: str) -> dict:
+def error(status: int, message: str, problems: list[str] | None = None) -> dict:
+    body: dict = {"message": message}
+    if problems:
+        body["problems"] = problems
     return {
         "statusCode": status,
         "headers": CORS_HEADERS,
-        "body": json.dumps({"message": message}),
+        "body": json.dumps(body),
     }
 
 

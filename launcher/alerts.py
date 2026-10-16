@@ -17,7 +17,7 @@ def _actor(rule_name: str) -> str:
     return f"launcher:{rule_name}"
 
 
-def _describe(error: Exception) -> str:
+def describe(error: Exception) -> str:
     # The registry says why it refused a launch (a missing risk policy, a stale balance, no active account) in the body.
     if isinstance(error, requests.HTTPError) and error.response is not None:
         return f"{error} {error.response.text}".strip()
@@ -40,11 +40,11 @@ def launched(registry: RegistryClient, rule_name: str, reason: str, config: Reso
     )
 
 
-def launch_failed(registry: RegistryClient, rule_name: str, request_id: str, error: Exception | str,
+def launch_failed(registry: RegistryClient, rule_name: str, key: str, error: Exception | str,
                   config: ResolvedStrategyConfig | None = None) -> None:
     _send(
         registry, "LAUNCH_FAILED", f"{rule_name} couldn't launch",
-        key=f"LAUNCH_FAILED:{request_id}", body=error if isinstance(error, str) else _describe(error),
+        key=key, body=error if isinstance(error, str) else describe(error),
         actor=_actor(rule_name), strategy_id=config.strategy_id if config else None,
         mode=config.mode if config else None, labels={"rule": rule_name},
     )

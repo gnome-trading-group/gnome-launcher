@@ -9,6 +9,7 @@ from urllib.parse import parse_qs
 
 import boto3
 
+from launcher import lifecycle
 from launcher.dynamo import DynamoClient
 from launcher.models import LaunchRequest
 from launcher.slack_client import SlackClient
@@ -18,11 +19,8 @@ logger = logging.getLogger(__name__)
 SLACK_SIGNING_SECRET_NAME = os.environ.get("SLACK_SIGNING_SECRET", "slack-signing-secret")
 APPROVE_LAUNCH_FUNCTION_NAME = os.environ["APPROVE_LAUNCH_FUNCTION_NAME"]
 APPROVE_SHUTDOWN_FUNCTION_NAME = os.environ["APPROVE_SHUTDOWN_FUNCTION_NAME"]
-SCHEDULER_ROLE_ARN = os.environ.get("SCHEDULER_ROLE_ARN", "")
-SCHEDULED_LAUNCH_FUNCTION_ARN = os.environ.get("SCHEDULED_LAUNCH_FUNCTION_ARN", "")
 
 _lambda_client = boto3.client("lambda")
-_scheduler_client = boto3.client("scheduler")
 _cached_signing_secret: str | None = None
 
 
@@ -109,36 +107,22 @@ def _handle_view_submission(payload: dict, dynamo: DynamoClient, slack: SlackCli
     if not request or request.get("status") != "SCHEDULED":
         return {"statusCode": 200, "body": ""}
 
-    old_schedule_name = request.get("schedule_name")
-    if old_schedule_name:
-        try:
-            _scheduler_client.delete_schedule(Name=old_schedule_name)
-        except Exception:
-            logger.warning("Failed to delete old schedule %s", old_schedule_name, exc_info=True)
-
-    new_schedule_name = f"launcher-{request_id}"
+    # Both schedules are named after the request, so the old one has to go before the new one can exist.
+    lifecycle.delete_schedule(request.get("schedule_name"))
     try:
-        _scheduler_client.create_schedule(
-            Name=new_schedule_name,
-            ScheduleExpression=f"at({new_time.strftime('%Y-%m-%dT%H:%M:%S')})",
-            ScheduleExpressionTimezone="UTC",
-            FlexibleTimeWindow={"Mode": "OFF"},
-            Target={
-                "Arn": SCHEDULED_LAUNCH_FUNCTION_ARN,
-                "RoleArn": SCHEDULER_ROLE_ARN,
-                "Input": json.dumps({"request_id": request_id}),
-            },
-            ActionAfterCompletion="DELETE",
-        )
+        new_schedule_name = lifecycle.create_schedule(request_id, new_time)
     except Exception:
-        logger.exception("Failed to create updated schedule for request %s", request_id)
+        logger.exception("Failed to create updated schedule for request %s; restoring the old time", request_id)
+        lifecycle.create_schedule(request_id, lifecycle.scheduled_time(request))
         return {"statusCode": 200, "body": ""}
 
-    dynamo.update_request(
-        request_id,
-        scheduled_time=new_time.isoformat(),
-        schedule_name=new_schedule_name,
-    )
+    username = payload.get("user", {}).get("username") or payload.get("user", {}).get("name", "unknown")
+    if dynamo.transition(request_id, "SCHEDULED", "SCHEDULED", f"slack:{username}",
+                         note=f"rescheduled to {new_time.isoformat()}",
+                         scheduled_time=new_time.isoformat(), schedule_name=new_schedule_name) is None:
+        # It fired or was cancelled while the modal was open.
+        lifecycle.delete_schedule(new_schedule_name)
+        return {"statusCode": 200, "body": ""}
 
     time_str = new_time.strftime("%Y-%m-%d %H:%M UTC")
     slack.post_thread_reply(
@@ -149,8 +133,18 @@ def _handle_view_submission(payload: dict, dynamo: DynamoClient, slack: SlackCli
     return {"statusCode": 200, "body": ""}
 
 
+def _already_handled(request: LaunchRequest, username: str, slack: SlackClient):
+    current = DynamoClient().get_request(request["request_id"]) or request
+    slack.post_thread_reply(
+        thread_ts=request["slack_message_ts"],
+        text=f"@{username}: nothing done, this request is already {current['status']}",
+    )
+
+
 def _handle_launch_reject(request: LaunchRequest, user_id: str, username: str, dynamo: DynamoClient, slack: SlackClient):
-    dynamo.update_request(request["request_id"], status="REJECTED", rejected_by=user_id)
+    if dynamo.transition(request["request_id"], "PENDING_APPROVAL", "REJECTED", f"slack:{username}",
+                         rejected_by=user_id) is None:
+        return _already_handled(request, username, slack)
     slack.update_message(
         message_ts=request["slack_message_ts"],
         text=f"Strategy launch rejected by @{username}",
@@ -159,7 +153,9 @@ def _handle_launch_reject(request: LaunchRequest, user_id: str, username: str, d
 
 
 def _handle_launch_approve(request: LaunchRequest, user_id: str, username: str, dynamo: DynamoClient, slack: SlackClient):
-    dynamo.update_request(request["request_id"], status="APPROVED", approved_by=user_id)
+    if dynamo.transition(request["request_id"], "PENDING_APPROVAL", "APPROVED", f"slack:{username}",
+                         approved_by=user_id) is None:
+        return _already_handled(request, username, slack)
     slack.update_message(
         message_ts=request["slack_message_ts"],
         text=f"Strategy launch approved by @{username} — launching...",
@@ -176,7 +172,9 @@ def _handle_launch_approve(request: LaunchRequest, user_id: str, username: str, 
 
 
 def _handle_shutdown_approve(request: LaunchRequest, user_id: str, username: str, dynamo: DynamoClient, slack: SlackClient):
-    dynamo.update_request(request["request_id"], status="SHUTDOWN_APPROVED", approved_by=user_id)
+    if dynamo.transition(request["request_id"], "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", f"slack:{username}",
+                         approved_by=user_id) is None:
+        return _already_handled(request, username, slack)
     slack.update_message(
         message_ts=request["slack_message_ts"],
         text=f"Shutdown approved by @{username} — stopping...",
@@ -193,7 +191,9 @@ def _handle_shutdown_approve(request: LaunchRequest, user_id: str, username: str
 
 
 def _handle_shutdown_reject(request: LaunchRequest, user_id: str, username: str, dynamo: DynamoClient, slack: SlackClient):
-    dynamo.update_request(request["request_id"], status="SHUTDOWN_REJECTED", rejected_by=user_id)
+    if dynamo.transition(request["request_id"], "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_REJECTED", f"slack:{username}",
+                         rejected_by=user_id) is None:
+        return _already_handled(request, username, slack)
     slack.update_message(
         message_ts=request["slack_message_ts"],
         text=f"Shutdown rejected by @{username} — keeping sessions running",
@@ -214,17 +214,10 @@ def _handle_schedule_modify(request: LaunchRequest, trigger_id: str, slack: Slac
 
 
 def _handle_schedule_cancel(request: LaunchRequest, user_id: str, username: str, dynamo: DynamoClient, slack: SlackClient):
-    if request.get("status") != "SCHEDULED":
-        return
-
-    schedule_name = request.get("schedule_name")
-    if schedule_name:
-        try:
-            _scheduler_client.delete_schedule(Name=schedule_name)
-        except Exception:
-            logger.warning("Failed to delete schedule %s", schedule_name, exc_info=True)
-
-    dynamo.update_request(request["request_id"], status="REJECTED", rejected_by=user_id)
+    if dynamo.transition(request["request_id"], "SCHEDULED", "CANCELLED", f"slack:{username}",
+                         rejected_by=user_id) is None:
+        return _already_handled(request, username, slack)
+    lifecycle.delete_schedule(request.get("schedule_name"))
     slack.update_message(
         message_ts=request["slack_message_ts"],
         text=f"Scheduled launch cancelled by @{username}",

@@ -9,6 +9,9 @@ from launcher.rules.types import ResolvedStrategyConfig
 # A session holds its strategy's slot from the moment it is requested, not only once it reports RUNNING:
 # counting RUNNING alone lets a second launch through while the first instance is still booting.
 ACTIVE_SESSION_STATUSES = "SUBMITTED,STARTING,RUNNING"
+# Stamped on every session the launcher starts, so a rule's shutdowns reach only the sessions it launched and never
+# a manual session of the same strategy that happens to share a listing.
+RULE_ID_KEY = "launcher.rule.id"
 
 
 def listing_ids(value) -> set[int]:
@@ -18,8 +21,9 @@ def listing_ids(value) -> set[int]:
     return {int(listing) for listing in value or []}
 
 
-def build_session_config(resolved_config: ResolvedStrategyConfig) -> dict[str, Any]:
+def build_session_config(resolved_config: ResolvedStrategyConfig, rule_id: str) -> dict[str, Any]:
     result: dict[str, Any] = {
+        RULE_ID_KEY: rule_id,
         "strategy.id": str(resolved_config.strategy_id),
         "mode": resolved_config.mode,
         "listings": resolved_config.listings,
@@ -35,7 +39,8 @@ def build_session_config(resolved_config: ResolvedStrategyConfig) -> dict[str, A
     return result
 
 
-def create_session(registry: RegistryClient, session_id: str, resolved_config: ResolvedStrategyConfig) -> dict:
+def create_session(registry: RegistryClient, session_id: str, resolved_config: ResolvedStrategyConfig,
+                   rule_id: str) -> dict:
     # Unset fields are left out rather than passed as None, so a gnomepy that predates them still works.
     optional = {
         "research_commit": resolved_config.research_commit,
@@ -49,6 +54,11 @@ def create_session(registry: RegistryClient, session_id: str, resolved_config: R
         session_id=session_id,
         strategy_id=resolved_config.strategy_id,
         mode=resolved_config.mode,
-        config=build_session_config(resolved_config),
+        config=build_session_config(resolved_config, rule_id),
         **{key: value for key, value in optional.items() if value is not None},
     )
+
+
+def find_session(registry: RegistryClient, session_id: str):
+    sessions = registry.get_strategy_sessions(session_id=session_id)
+    return sessions[0] if sessions else None

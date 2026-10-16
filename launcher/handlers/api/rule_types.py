@@ -1,10 +1,7 @@
 import logging
 
 from launcher.handlers.api.http import api_handler, ok
-from launcher.rules.classifier_event import ClassifierEventRule  # noqa: F401 — registers rule type
-from launcher.rules.cs2 import CS2Rule  # noqa: F401 — registers rule type
-from launcher.rules.direct_launch import DirectLaunchRule  # noqa: F401 — registers rule type
-from launcher.rules.types import RULE_TYPE_REGISTRY
+from launcher.rules.catalog import RULE_TYPE_REGISTRY
 
 logger = logging.getLogger(__name__)
 

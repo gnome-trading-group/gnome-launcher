@@ -27,6 +27,8 @@ import pandas as pd
 from gnomepy.data import DatasetStore
 from pyiceberg.expressions import GreaterThanOrEqual
 
+from launcher.queues import send_trigger
+
 logger = logging.getLogger(__name__)
 
 MATCHES = "cs2_upcoming_matches"
@@ -75,9 +77,7 @@ def handler(event, context):
     found = triggers(latest(rows), now) if len(rows) else []
     sqs = boto3.client("sqs")
     for action, data in found:
-        sqs.send_message(QueueUrl=queues[action], MessageBody=json.dumps({
-            "rule_type": RULE_TYPE, "action": action, "timestamp": now.isoformat(), "data": data,
-        }))
+        send_trigger(sqs, queues[action], RULE_TYPE, action, data, now.isoformat())
     counts = {a: sum(1 for x, _ in found if x == a) for a in ("launch", "shutdown")}
     logger.info("cs2 scan: %d matches, %s", rows.match_id.nunique() if len(rows) else 0, counts)
     return counts

@@ -24,6 +24,7 @@ from launcher.rules.types import (
     RuleEvaluation,
     RuleType,
     ShutdownEvaluation,
+    bad_profile_names,
     register_rule_type,
 )
 from launcher.sessions import ACTIVE_SESSION_STATUSES, listing_ids
@@ -33,10 +34,7 @@ logger = logging.getLogger(__name__)
 VENUES = ("polymarket", "kalshi", "polymarket_us")
 MARKETS = ("series", "game1")
 DEFAULT_MARKET = "series"
-# Taker fee rates (fee per share = rate * p * (1 - p)), as in gnomepy-research's profiles. They belong on the
-# registry's listing specs eventually; until then a rule can override them with fee_rates.
-DEFAULT_FEE_RATES = {"polymarket": 0.07, "kalshi": 0.07, "polymarket_us": 0.0695}
-DEFAULT_PROFILES = {"polymarket": "polymarket_intl", "kalshi": "kalshi", "polymarket_us": "polymarket_us"}
+DEFAULT_PROFILES = {"polymarket": "polymarketintl", "kalshi": "kalshi", "polymarket_us": "polymarketus"}
 
 
 def _listings(data: dict) -> list[int]:
@@ -67,8 +65,6 @@ class CS2Rule(RuleType):
                        "description": "The market this rule's strategy trades"},
             "venues": {"type": "array", "items": {"type": "string", "enum": list(VENUES)},
                        "default": list(VENUES), "description": "Venues to launch on"},
-            "fee_rates": {"type": "object", "additionalProperties": {"type": "number"},
-                          "description": "Taker fee rate per venue, over the defaults"},
             "simulation_profiles": {"type": "object", "additionalProperties": {"type": "string"},
                                     "description": "Paper-mode simulation profile per venue, over the defaults; "
                                                    "each must be defined in simulation_config"},
@@ -94,10 +90,13 @@ class CS2Rule(RuleType):
             "match_id": int(data["match_id"]),
             "listing_team_a": listings[0],
             "listing_team_b": listings[1],
-            "fee_rate": {**DEFAULT_FEE_RATES, **params.get("fee_rates", {})}[venue],
         }
         if config.mode == "paper":
             profile = {**DEFAULT_PROFILES, **params.get("simulation_profiles", {})}[venue]
+            if bad_profile_names([profile]):
+                logger.error("match %s on %s: simulation profile %r must be lowercase letters and digits only",
+                             data["match_id"], venue, profile)
+                return None
             if not any(k.startswith(f"simulation.profiles.{profile}.") for k in config.simulation_config):
                 logger.error("match %s on %s: simulation profile %r isn't defined in the rule's simulation_config",
                              data["match_id"], venue, profile)
@@ -108,6 +107,19 @@ class CS2Rule(RuleType):
             }
         return RuleEvaluation(should_launch=True, resolved_config=config,
                               reason=f"CS2 match {data['match_id']} {market} on {venue}")
+
+    def validate_parameters(self, params: dict) -> list[str]:
+        problems = super().validate_parameters(params)
+        profiles = {**DEFAULT_PROFILES, **params.get("simulation_profiles", {})}
+        if bad := bad_profile_names(profiles.values()):
+            problems.append(f"simulation_profiles must name profiles in lowercase letters and digits only: {', '.join(bad)}")
+        if params.get("mode") == "paper":
+            sim = params.get("simulation_config", {})
+            for venue in params.get("venues", VENUES):
+                if not any(k.startswith(f"simulation.profiles.{profiles[venue]}.") for k in sim):
+                    problems.append(f"paper sessions on {venue} use profile {profiles[venue]!r}, "
+                                    f"which simulation_config doesn't define")
+        return problems
 
     def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | None:
         strategy_id = params.get("strategy_id")

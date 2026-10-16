@@ -3,50 +3,41 @@ import logging
 
 from gnomepy.registry import RegistryClient
 
+from launcher import lifecycle
 from launcher.dynamo import DynamoClient
+from launcher.rules.types import RuleContext
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
 
 
 def handler(event, context):
+    """Carries out a shutdown approval the Slack interaction already recorded (the request is SHUTDOWN_APPROVED)."""
     request_id = event["request_id"]
     username = event.get("username", "unknown")
+    actor = f"slack:{username}"
+    ctx = RuleContext(registry=RegistryClient(), dynamo=DynamoClient(), slack=SlackClient())
 
-    dynamo = DynamoClient()
-    registry = RegistryClient()
-    slack = SlackClient()
-
-    request = dynamo.get_request(request_id)
-    if not request:
-        logger.error("Shutdown request not found: %s", request_id)
+    request = ctx.dynamo.transition(request_id, "SHUTDOWN_APPROVED", "STOPPING", actor)
+    if request is None:
+        logger.info("Shutdown request %s is no longer approved and waiting; nothing to do", request_id)
         return
-
+    result = lifecycle.stop(ctx, request, request["matched_rule_name"], f"approved by @{username}", actor)
     target_session_ids = request.get("target_session_ids") or []
-    errors = []
-    for session_id in target_session_ids:
-        try:
-            registry.stop_strategy_session_as_service(session_id, actor=f"slack:{username}")
-        except Exception as e:
-            logger.exception("Failed to stop session %s", session_id)
-            errors.append({"session_id": session_id, "error": str(e)})
-
-    rule_name = request.get("matched_rule_name", "")
-    if errors:
-        dynamo.update_request(request_id, status="STOP_FAILED", launch_error=json.dumps(errors))
-        slack.update_message(
+    if result is not None and result["status"] == "STOP_FAILED":
+        errors = json.loads(result["launch_error"])
+        ctx.slack.update_message(
             message_ts=request["slack_message_ts"],
             text=f"Shutdown approved by @{username} — stop failed for {len(errors)} session(s)",
             blocks=_build_shutdown_result_blocks(request, username, errors=errors),
         )
     else:
-        dynamo.update_request(request_id, status="STOPPED")
-        slack.update_message(
+        ctx.slack.update_message(
             message_ts=request["slack_message_ts"],
             text=f"Shutdown approved by @{username} — {len(target_session_ids)} session(s) stopped",
             blocks=_build_shutdown_result_blocks(request, username),
         )
-        slack.post_thread_reply(
+        ctx.slack.post_thread_reply(
             thread_ts=request["slack_message_ts"],
             text=f":white_check_mark: {len(target_session_ids)} session(s) stopped by @{username}",
         )

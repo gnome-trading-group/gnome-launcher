@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,15 @@ STRATEGY_PARAMS_SCHEMA: dict = {
 }
 
 STRATEGY_REQUIRED_PARAMS: list[str] = ["strategy_id", "strategy_type", "strategy_class", "mode"]
+
+# A session's config travels to the orchestrator as environment variables: simulation.profiles.<name>.… becomes
+# SIMULATION_PROFILES_<NAME>_…, which bash refuses if the name has a '-', and gnome-core turns back into a property
+# by lowercasing it and reading every '_' as '.'. Only lowercase letters and digits survive the round trip.
+PROFILE_NAME = re.compile(r"[a-z0-9]+")
+
+
+def bad_profile_names(names) -> list[str]:
+    return sorted({n for n in names if not PROFILE_NAME.fullmatch(n)})
 
 
 @dataclass
@@ -120,6 +130,13 @@ class RuleType:
 
     def compute_schedule_time(self, data: dict, params: dict, ctx: RuleContext) -> ScheduleResult | None:
         return None
+
+    def validate_parameters(self, params: dict) -> list[str]:
+        """Checks beyond parameter_schema; each problem as one message."""
+        names = {k.split(".")[2] for k in params.get("simulation_config", {})
+                 if k.startswith("simulation.profiles.") and k.count(".") >= 3}
+        bad = bad_profile_names(names)
+        return [f"simulation profile names must be lowercase letters and digits only: {', '.join(bad)}"] if bad else []
 
 
 RULE_TYPE_REGISTRY: dict[str, type[RuleType]] = {}

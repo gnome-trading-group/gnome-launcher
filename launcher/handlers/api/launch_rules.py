@@ -1,8 +1,13 @@
+"""Launch rules: create, read, change and archive. Every write is validated as a whole rule (an edit is merged
+into the stored rule first), so a rule that would fail when its next trigger arrives is refused when saved.
+Rules are archived rather than deleted: launch history keeps pointing at them, and the shutdown processor still
+stops the sessions an archived rule launched."""
 import json
 import logging
 
 from launcher.dynamo import DynamoClient
 from launcher.handlers.api.http import api_handler, error, ok
+from launcher.rules.validation import EDITABLE_FIELDS, RULE_DEFAULTS, validate_rule
 
 logger = logging.getLogger(__name__)
 
@@ -11,76 +16,43 @@ logger = logging.getLogger(__name__)
 def handler(event, context):
     dynamo = DynamoClient()
     method = event.get("httpMethod", "")
-    path_params = event.get("pathParameters") or {}
-    rule_id = path_params.get("id")
+    rule_id = (event.get("pathParameters") or {}).get("id")
 
     if method == "GET" and rule_id:
-        item = dynamo.get_rule(rule_id)
-        if not item:
-            return error(404, f"Rule not found: {rule_id}")
-        return ok(item)
-
+        rule = dynamo.get_rule(rule_id)
+        return ok(rule) if rule else error(404, f"Rule not found: {rule_id}")
     if method == "GET":
         return ok(dynamo.list_rules())
 
-    if method == "POST":
-        return _handle_create(event, dynamo)
-
-    if method == "PATCH" and rule_id:
-        return _handle_update(event, dynamo, rule_id)
-
-    if method == "DELETE" and rule_id:
-        existing = dynamo.get_rule(rule_id)
-        if not existing:
-            return error(404, f"Rule not found: {rule_id}")
-        dynamo.delete_rule(rule_id)
-        return ok({"deleted": rule_id})
-
-    return error(400, f"Unsupported method: {method}")
-
-
-def _handle_create(event, dynamo: DynamoClient) -> dict:
     try:
         body = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
         return error(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        return error(400, "The body must be a JSON object")
 
-    required = {"name", "rule_type", "launch_path", "parameters"}
-    missing = required - set(body)
-    if missing:
-        return error(400, f"Missing required fields: {', '.join(sorted(missing))}")
+    if method == "POST":
+        rule = {**RULE_DEFAULTS, **body}
+        problems = validate_rule(rule)
+        if problems:
+            return error(400, "Invalid rule", problems)
+        return ok(dynamo.create_rule(rule), 201)
 
-    item = dynamo.create_rule(
-        name=body["name"],
-        rule_type=body["rule_type"],
-        launch_path=body["launch_path"],
-        parameters=body["parameters"],
-        description=body.get("description"),
-        shutdown_path=body.get("shutdown_path", "auto"),
-        schedule_enabled=body.get("schedule_enabled", False),
-        max_concurrent_sessions=body.get("max_concurrent_sessions"),
-        cooldown_minutes=body.get("cooldown_minutes", 0),
-        dedup_window_minutes=body.get("dedup_window_minutes", 60),
-    )
-    return ok(item, 201)
-
-
-def _handle_update(event, dynamo: DynamoClient, rule_id: str) -> dict:
-    existing = dynamo.get_rule(rule_id)
-    if not existing:
+    existing = dynamo.get_rule(rule_id) if rule_id else None
+    if existing is None:
         return error(404, f"Rule not found: {rule_id}")
 
-    try:
-        body = json.loads(event.get("body") or "{}")
-    except json.JSONDecodeError:
-        return error(400, "Invalid JSON body")
+    if method == "PATCH":
+        unknown = set(body) - set(EDITABLE_FIELDS)
+        if unknown:
+            return error(400, f"Not editable: {', '.join(sorted(unknown))}")
+        rule = {**existing, **body}
+        problems = validate_rule({k: v for k, v in rule.items() if k not in ("rule_id", "date_created", "date_modified")})
+        if problems:
+            return error(400, "Invalid rule", problems)
+        return ok(dynamo.replace_rule(rule))
 
-    allowed = {"name", "description", "status", "launch_path", "shutdown_path",
-               "schedule_enabled", "parameters", "max_concurrent_sessions",
-               "cooldown_minutes", "dedup_window_minutes"}
-    updates = {k: v for k, v in body.items() if k in allowed}
-    if not updates:
-        return error(400, "No updatable fields provided")
+    if method == "DELETE":
+        return ok(dynamo.replace_rule({**existing, "status": "archived"}))
 
-    updated = dynamo.update_rule(rule_id, **updates)
-    return ok(updated)
+    return error(400, f"Unsupported method: {method}")

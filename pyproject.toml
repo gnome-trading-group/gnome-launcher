@@ -11,6 +11,8 @@ gnomepy = {version = "^2.24.0", extras = ["live-data"]}
 boto3 = "*"
 requests = "*"
 anthropic = "*"
+# Rules are checked against their type's parameter_schema, and triggers against its data_schema.
+jsonschema = "^4.23"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

@@ -42,6 +42,9 @@ def _post(method: str, payload: dict) -> dict:
 
 
 class SlackClient:
+    """Posts to the launcher's channel. With no channel configured (dev) every call is a no-op and the send_*
+    methods return None, so a stage without Slack runs the same code."""
+
     def __init__(self):
         self.channel = SLACK_CHANNEL_ID
 
@@ -53,7 +56,9 @@ class SlackClient:
         config: ResolvedStrategyConfig,
         scheduled_time: datetime | None = None,
         schedule_reason: str | None = None,
-    ) -> str:
+    ) -> str | None:
+        if not self.channel:
+            return None
         blocks = _build_approval_blocks(request_id, rule_name, reason, config, scheduled_time, schedule_reason)
         result = _post("chat.postMessage", {
             "channel": self.channel,
@@ -62,7 +67,9 @@ class SlackClient:
         })
         return result["ts"]
 
-    def post_thread_reply(self, thread_ts: str, text: str):
+    def post_thread_reply(self, thread_ts: str | None, text: str):
+        if not self.channel or not thread_ts:
+            return
         try:
             _post("chat.postMessage", {
                 "channel": self.channel,
@@ -72,7 +79,9 @@ class SlackClient:
         except Exception:
             logger.warning("Failed to post Slack thread reply", exc_info=True)
 
-    def update_message(self, message_ts: str, text: str, blocks: list | None = None):
+    def update_message(self, message_ts: str | None, text: str, blocks: list | None = None):
+        if not self.channel or not message_ts:
+            return
         payload: dict = {"channel": self.channel, "ts": message_ts, "text": text}
         if blocks is not None:
             payload["blocks"] = blocks
@@ -87,7 +96,9 @@ class SlackClient:
         rule_name: str,
         reason: str,
         session_ids: list[str],
-    ) -> str:
+    ) -> str | None:
+        if not self.channel:
+            return None
         blocks = _build_shutdown_approval_blocks(request_id, rule_name, reason, session_ids)
         result = _post("chat.postMessage", {
             "channel": self.channel,
@@ -105,7 +116,9 @@ class SlackClient:
         scheduled_time: datetime,
         schedule_reason: str,
         launch_path: str,
-    ) -> str:
+    ) -> str | None:
+        if not self.channel:
+            return None
         blocks = _build_scheduled_launch_blocks(
             request_id, rule_name, reason, config, scheduled_time, schedule_reason, launch_path
         )

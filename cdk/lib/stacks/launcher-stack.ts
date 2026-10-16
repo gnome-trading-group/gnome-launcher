@@ -84,10 +84,16 @@ export class LauncherStack extends cdk.Stack {
 
     // ── SQS Queues ────────────────────────────────────────────────────────
 
-    const launcherDlq = new sqs.Queue(this, 'LauncherDlq', {
+    // The launch and shutdown queues are FIFO, and every trigger's message group is its rule type
+    // (launcher/queues.py), so the processors take one trigger of a type at a time and two can't both pass a dedup
+    // or concurrency check. Reserved concurrency would do the same, but the account's Lambda concurrency is too small
+    // to reserve any. SQS's own content dedup stays off: the launcher dedups per rule and window itself.
+    const launcherDlq = new sqs.Queue(this, 'LauncherFifoDlq', {
+      fifo: true,
       retentionPeriod: cdk.Duration.days(14),
     });
-    const launcherQueue = new sqs.Queue(this, 'LauncherQueue', {
+    const launcherQueue = new sqs.Queue(this, 'LauncherFifoQueue', {
+      fifo: true,
       visibilityTimeout: cdk.Duration.minutes(5),
       deadLetterQueue: { queue: launcherDlq, maxReceiveCount: 3 },
     });
@@ -100,10 +106,12 @@ export class LauncherStack extends cdk.Stack {
       deadLetterQueue: { queue: classifierAdapterDlq, maxReceiveCount: 3 },
     });
 
-    const shutdownDlq = new sqs.Queue(this, 'ShutdownDlq', {
+    const shutdownDlq = new sqs.Queue(this, 'ShutdownFifoDlq', {
+      fifo: true,
       retentionPeriod: cdk.Duration.days(14),
     });
-    const shutdownQueue = new sqs.Queue(this, 'ShutdownQueue', {
+    const shutdownQueue = new sqs.Queue(this, 'ShutdownFifoQueue', {
+      fifo: true,
       visibilityTimeout: cdk.Duration.minutes(5),
       deadLetterQueue: { queue: shutdownDlq, maxReceiveCount: 3 },
     });
@@ -312,9 +320,10 @@ export class LauncherStack extends cdk.Stack {
       'launcher.handlers.api.api_trigger.handler',
       cdk.Duration.seconds(10),
       256,
-      { LAUNCHER_QUEUE_URL: launcherQueue.queueUrl },
+      { LAUNCHER_QUEUE_URL: launcherQueue.queueUrl, SHUTDOWN_QUEUE_URL: shutdownQueue.queueUrl },
       (fn) => {
         launcherQueue.grantSendMessages(fn);
+        shutdownQueue.grantSendMessages(fn);
       },
     );
 

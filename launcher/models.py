@@ -1,15 +1,26 @@
 from typing import Literal, TypedDict
 
+RequestStatus = Literal[
+    "PENDING_APPROVAL", "APPROVED", "REJECTED", "SCHEDULED", "CANCELLED", "LAUNCHING", "LAUNCHED", "FAILED",
+    "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", "SHUTDOWN_REJECTED", "STOPPING", "STOPPED", "STOP_FAILED",
+]
+RuleStatus = Literal["active", "disabled", "archived"]
+
+# A request in one of these went nowhere: it holds no session and doesn't count as a repeat of its trigger.
+DEAD_END_STATUSES = ("FAILED", "REJECTED", "CANCELLED", "SHUTDOWN_REJECTED", "STOP_FAILED")
+
+
+class RequestEvent(TypedDict):
+    at: str
+    status: str | None
+    actor: str
+    note: str | None
+
 
 class LaunchRequest(TypedDict):
     request_id: str
     action: Literal["launch", "shutdown"]
-    status: Literal[
-        "PENDING_APPROVAL", "APPROVED", "REJECTED", "LAUNCHING", "LAUNCHED", "FAILED",
-        "SCHEDULED",
-        "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", "SHUTDOWN_REJECTED",
-        "STOPPING", "STOPPED", "STOP_FAILED",
-    ]
+    status: RequestStatus
     rule_type: str
     data: dict
     dedup_key: str
@@ -26,9 +37,9 @@ class LaunchRequest(TypedDict):
     scheduled_time: str | None
     schedule_name: str | None
     launch_error: str | None
+    events: list[RequestEvent]
     date_created: str
     date_modified: str
-    ttl: int
 
 
 class LaunchRule(TypedDict):
@@ -36,7 +47,7 @@ class LaunchRule(TypedDict):
     name: str
     description: str | None
     rule_type: str
-    status: Literal["active", "disabled"]
+    status: RuleStatus
     launch_path: Literal["auto", "approval"]
     shutdown_path: Literal["auto", "approval"]
     schedule_enabled: bool

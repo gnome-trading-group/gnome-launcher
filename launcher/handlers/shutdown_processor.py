@@ -1,123 +1,72 @@
-import hashlib
+"""Shutdown triggers, one at a time per rule type. Every rule of the type is asked, not only active ones: disabling
+a rule stops it launching, and must not leave the sessions it already launched running. A rule only ever stops
+sessions it launched itself."""
 import json
 import logging
 
 from gnomepy.registry import RegistryClient
 
-from launcher import alerts
+from launcher import lifecycle
 from launcher.config import config
 from launcher.dynamo import DynamoClient
-from launcher.rules.classifier_event import ClassifierEventRule  # noqa: F401 — registers rule type
-from launcher.rules.cs2 import CS2Rule  # noqa: F401 — registers rule type
-from launcher.rules.direct_launch import DirectLaunchRule  # noqa: F401 — registers rule type
-from launcher.rules.types import RULE_TYPE_REGISTRY, RuleContext
+from launcher.rules.catalog import RULE_TYPE_REGISTRY
+from launcher.rules.types import RuleContext
+from launcher.rules.validation import validate_data
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
 
 
 def handler(event, context):
-    ctx = RuleContext(
-        registry=RegistryClient(),
-        dynamo=DynamoClient(),
-        slack=SlackClient(),
-    )
+    ctx = RuleContext(registry=RegistryClient(), dynamo=DynamoClient(), slack=SlackClient())
     for record in event["Records"]:
         message = json.loads(record["body"])
         try:
-            _process_shutdown_message(message, ctx)
+            process(message, ctx)
         except Exception:
             logger.exception("Failed to process shutdown message: %s", record.get("messageId"))
             raise
 
 
-def _process_shutdown_message(message: dict, ctx: RuleContext):
-    rule_type = message["rule_type"]
-    data = message["data"]
-
-    rules = ctx.dynamo.get_active_rules(rule_type)
-    if not rules:
+def process(message: dict, ctx: RuleContext) -> None:
+    rule_type, data = message["rule_type"], message["data"]
+    problems = validate_data(rule_type, data)
+    if problems:
+        logger.error("Dropping invalid %s shutdown trigger: %s", rule_type, "; ".join(problems))
         return
-
-    dedup_key = _compute_dedup_key(rule_type, data)
-    min_window = min((r.get("dedup_window_minutes", 60) for r in rules), default=60)
-    if ctx.dynamo.find_by_dedup_key(dedup_key, dedup_window_minutes=min_window):
-        logger.info("Duplicate shutdown trigger skipped: %s", dedup_key)
-        return
-
-    rule_type_cls = RULE_TYPE_REGISTRY.get(rule_type)
-    if not rule_type_cls:
-        logger.warning("Unknown rule type for shutdown: %s", rule_type)
-        return
-
-    for rule in rules:
+    rule_type_cls = RULE_TYPE_REGISTRY[rule_type]
+    key = lifecycle.dedup_key(rule_type, "shutdown", data)
+    for rule in ctx.dynamo.get_rules_of_type(rule_type):
+        if lifecycle.is_repeat(ctx.dynamo, rule, key):
+            continue
         try:
             evaluation = rule_type_cls().evaluate_shutdown(data, rule["parameters"], ctx)
         except Exception:
-            logger.exception("Shutdown evaluation failed for rule %s", rule.get("rule_id"))
+            logger.exception("Shutdown evaluation failed for rule %s", rule["rule_id"])
             continue
-
         if not evaluation or not evaluation.should_shutdown:
             continue
+        targets = lifecycle.launched_by(ctx, rule["rule_id"], evaluation.target_session_ids)
+        if not targets:
+            continue
 
-        shutdown_path = rule.get("shutdown_path", "auto")
-        if not config.SLACK_INTERACTION_ENABLED:
-            shutdown_path = "auto"
-
+        shutdown_path = (rule.get("shutdown_path") or "auto") if config.SLACK_INTERACTION_ENABLED else "auto"
         request = ctx.dynamo.create_launch_request(
-            rule_type=rule_type,
-            data=data,
-            dedup_key=dedup_key,
-            resolved_config={},
-            matched_rule_id=rule["rule_id"],
-            matched_rule_name=rule["name"],
-            launch_path=shutdown_path,
+            rule_type=rule_type, data=data, dedup_key=key, resolved_config={},
+            matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"], launch_path=shutdown_path,
             status="STOPPING" if shutdown_path == "auto" else "PENDING_SHUTDOWN_APPROVAL",
-            action="shutdown",
-            target_session_ids=evaluation.target_session_ids,
+            actor=lifecycle.AUTO_ACTOR, note=evaluation.reason, action="shutdown", target_session_ids=targets,
         )
-
         if shutdown_path == "auto":
-            _auto_shutdown(request, rule, evaluation, ctx)
-        else:
-            _request_shutdown_approval(request, rule, evaluation, ctx)
-
-
-def _auto_shutdown(request, rule, evaluation, ctx: RuleContext):
-    errors = []
-    for session_id in evaluation.target_session_ids:
+            lifecycle.stop(ctx, request, rule["name"], evaluation.reason, f"launcher:{rule['name']}")
+            continue
         try:
-            ctx.registry.stop_strategy_session_as_service(session_id, actor=f"launcher:{rule['name']}")
+            ts = ctx.slack.send_shutdown_approval_message(
+                request_id=request["request_id"], rule_name=rule["name"], reason=evaluation.reason, session_ids=targets)
         except Exception as e:
-            logger.exception("Failed to stop session %s", session_id)
-            errors.append({"session_id": session_id, "error": str(e)})
-
-    if errors:
-        ctx.dynamo.update_request(
-            request["request_id"],
-            status="STOP_FAILED",
-            launch_error=json.dumps(errors),
-        )
-        alerts.shutdown_failed(ctx.registry, rule["name"], errors)
-    else:
-        ctx.dynamo.update_request(request["request_id"], status="STOPPED")
-        alerts.stopped(ctx.registry, rule["name"], evaluation.reason, evaluation.target_session_ids)
-
-
-def _request_shutdown_approval(request, rule, evaluation, ctx: RuleContext):
-    message_ts = ctx.slack.send_shutdown_approval_message(
-        request_id=request["request_id"],
-        rule_name=rule["name"],
-        reason=evaluation.reason,
-        session_ids=evaluation.target_session_ids,
-    )
-    ctx.dynamo.update_request(
-        request["request_id"],
-        slack_message_ts=message_ts,
-        slack_channel=ctx.slack.channel,
-    )
-
-
-def _compute_dedup_key(rule_type: str, data: dict) -> str:
-    content = json.dumps({"rule_type": rule_type, "action": "shutdown", "data": data}, sort_keys=True)
-    return hashlib.sha256(content.encode()).hexdigest()[:24]
+            logger.exception("Couldn't post the shutdown approval for %s", request["request_id"])
+            ctx.dynamo.transition(request["request_id"], "PENDING_SHUTDOWN_APPROVAL", "STOP_FAILED", lifecycle.AUTO_ACTOR,
+                                  note=f"Couldn't post the approval request: {e}", launch_error=str(e))
+            continue
+        if ts:
+            ctx.dynamo.annotate(request["request_id"], slack_message_ts=ts, slack_channel=ctx.slack.channel)

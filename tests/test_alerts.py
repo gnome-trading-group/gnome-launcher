@@ -20,11 +20,11 @@ def test_a_refused_launch_says_why():
     response._content = b'{"message":"Missing MAX_POSITION for listing 2"}'
     error = requests.HTTPError("422 Client Error", response=response)
 
-    alerts.launch_failed(registry, "cs2-prematch", "req-1", error, _config())
+    alerts.launch_failed(registry, "cs2-prematch", "LAUNCH_FAILED:rule-1:abc", error, _config())
 
     args, kwargs = registry.send_alert.call_args
     assert args == ("LAUNCH_FAILED", "cs2-prematch couldn't launch")
-    assert kwargs["key"] == "LAUNCH_FAILED:req-1"
+    assert kwargs["key"] == "LAUNCH_FAILED:rule-1:abc"
     assert "Missing MAX_POSITION for listing 2" in kwargs["body"]
     assert kwargs["actor"] == "launcher:cs2-prematch"
     assert kwargs["mode"] == "live"

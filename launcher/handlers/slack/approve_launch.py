@@ -1,116 +1,98 @@
-import json
 import logging
-import os
-import uuid
-from datetime import datetime, timezone
 
-import boto3
 from gnomepy.registry import RegistryClient
 
+from launcher import lifecycle
 from launcher.config import config
 from launcher.dynamo import DynamoClient
 from launcher.models import LaunchRequest
-from launcher.rules.types import ResolvedStrategyConfig
-from launcher.sessions import create_session
+from launcher.rules.types import ResolvedStrategyConfig, RuleContext
 from launcher.slack_client import SlackClient
 
 logger = logging.getLogger(__name__)
 
-SCHEDULED_LAUNCH_FUNCTION_ARN = os.environ.get("SCHEDULED_LAUNCH_FUNCTION_ARN", "")
-SCHEDULER_ROLE_ARN = os.environ.get("SCHEDULER_ROLE_ARN", "")
-
-_scheduler_client = boto3.client("scheduler")
-
 
 def handler(event, context):
+    """Carries out an approval the Slack interaction already recorded (the request is APPROVED): schedules it if it
+    has a time still to come, otherwise launches it."""
     request_id = event["request_id"]
     username = event.get("username", "unknown")
+    actor = f"slack:{username}"
+    ctx = RuleContext(registry=RegistryClient(), dynamo=DynamoClient(), slack=SlackClient())
 
-    dynamo = DynamoClient()
-    registry = RegistryClient()
-    slack = SlackClient()
-
-    request = dynamo.get_request(request_id)
+    request = ctx.dynamo.get_request(request_id)
     if not request:
         logger.error("Request not found: %s", request_id)
         return
-
-    scheduled_time_str = request.get("scheduled_time")
-    if scheduled_time_str:
-        _create_schedule(request_id, scheduled_time_str, dynamo, slack, request, username)
+    when = lifecycle.scheduled_time(request)
+    if not lifecycle.is_due(when):
+        _schedule(request, when, username, ctx)
     else:
-        _launch_session(request_id, request, registry, dynamo, slack, username)
+        _launch(request, actor, username, ctx)
 
 
-def _create_schedule(request_id: str, scheduled_time_str: str, dynamo: DynamoClient, slack: SlackClient, request: LaunchRequest, username: str):
-    scheduled_time = datetime.fromisoformat(scheduled_time_str)
-    if scheduled_time.tzinfo is None:
-        scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
-
-    schedule_name = f"launcher-{request_id}"
+def _schedule(request: LaunchRequest, when, username: str, ctx: RuleContext):
+    request_id = request["request_id"]
     try:
-        _scheduler_client.create_schedule(
-            Name=schedule_name,
-            ScheduleExpression=f"at({scheduled_time.strftime('%Y-%m-%dT%H:%M:%S')})",
-            ScheduleExpressionTimezone="UTC",
-            FlexibleTimeWindow={"Mode": "OFF"},
-            Target={
-                "Arn": SCHEDULED_LAUNCH_FUNCTION_ARN,
-                "RoleArn": SCHEDULER_ROLE_ARN,
-                "Input": json.dumps({"request_id": request_id}),
-            },
-            ActionAfterCompletion="DELETE",
-        )
-        dynamo.update_request(request_id, status="SCHEDULED", schedule_name=schedule_name)
-        time_str = scheduled_time.strftime("%Y-%m-%d %H:%M UTC")
-        slack.update_message(
-            message_ts=request["slack_message_ts"],
-            text=f"Strategy launch approved by @{username} — scheduled for {time_str}",
-            blocks=_build_scheduled_blocks(request, username, time_str),
-        )
-        slack.post_thread_reply(
-            thread_ts=request["slack_message_ts"],
-            text=f":calendar: Approved by @{username} — scheduled for *{time_str}*",
-        )
+        name = lifecycle.create_schedule(request_id, when)
     except Exception as e:
         logger.exception("Failed to create schedule for request %s", request_id)
-        dynamo.update_request(request_id, status="FAILED", launch_error=str(e))
-        slack.update_message(
+        lifecycle.fail(ctx, request, "APPROVED", request["matched_rule_name"], f"Couldn't create the schedule: {e}",
+                       f"slack:{username}")
+        ctx.slack.update_message(
             message_ts=request["slack_message_ts"],
             text=f"Strategy launch approved by @{username} — scheduling failed",
             blocks=_build_failed_blocks(request, username, str(e)),
         )
+        return
+    if ctx.dynamo.transition(request_id, "APPROVED", "SCHEDULED", f"slack:{username}", schedule_name=name) is None:
+        lifecycle.delete_schedule(name)
+        return
+    time_str = when.strftime("%Y-%m-%d %H:%M UTC")
+    ctx.slack.update_message(
+        message_ts=request["slack_message_ts"],
+        text=f"Strategy launch approved by @{username} — scheduled for {time_str}",
+        blocks=_build_scheduled_blocks(request, username, time_str),
+    )
+    ctx.slack.post_thread_reply(
+        thread_ts=request["slack_message_ts"],
+        text=f":calendar: Approved by @{username} — scheduled for *{time_str}*",
+    )
 
 
-def _launch_session(request_id: str, request: LaunchRequest, registry: RegistryClient, dynamo: DynamoClient, slack: SlackClient, username: str):
-    resolved_config = ResolvedStrategyConfig(**request["resolved_config"])
-    session_id = str(uuid.uuid4())
-
-    try:
-        create_session(registry, session_id, resolved_config)
-        dynamo.update_request(request_id, status="LAUNCHED", session_id=session_id)
-
-        session_url = f"{config.CONTROLLER_BASE_URL}/sessions/{session_id}"
-        slack.update_message(
+def _launch(request: LaunchRequest, actor: str, username: str, ctx: RuleContext):
+    request_id = request["request_id"]
+    launching = ctx.dynamo.transition(request_id, "APPROVED", "LAUNCHING", actor)
+    if launching is None:
+        return
+    blocker = lifecycle.blocking_session(ResolvedStrategyConfig(**request["resolved_config"]), ctx)
+    if blocker:
+        result = lifecycle.fail(ctx, launching, "LAUNCHING", request["matched_rule_name"],
+                                f"Session {blocker} already holds these listings", actor)
+    else:
+        result = lifecycle.launch(ctx, launching, request["matched_rule_name"], f"approved by @{username}", actor)
+    if result is None:
+        return
+    if result["status"] == "LAUNCHED":
+        session_url = f"{config.CONTROLLER_BASE_URL}/sessions/{result['session_id']}"
+        ctx.slack.update_message(
             message_ts=request["slack_message_ts"],
             text=f"Strategy launch approved by @{username}",
             blocks=_build_launched_blocks(request, username),
         )
-        slack.post_thread_reply(
+        ctx.slack.post_thread_reply(
             thread_ts=request["slack_message_ts"],
             text=f":rocket: Session launched: <{session_url}|View session>",
         )
-    except Exception as e:
-        logger.exception("Approve-launch failed for request %s", request_id)
-        dynamo.update_request(request_id, status="FAILED", launch_error=str(e))
-        slack.update_message(
+    else:
+        ctx.slack.update_message(
             message_ts=request["slack_message_ts"],
             text=f"Strategy launch approved by @{username} — launch failed",
-            blocks=_build_failed_blocks(request, username, str(e)),
+            blocks=_build_failed_blocks(request, username, result.get("launch_error") or ""),
         )
-        slack.post_thread_reply(
+        ctx.slack.post_thread_reply(
             thread_ts=request["slack_message_ts"],
-            text=f":x: Launch failed: {e}",
+            text=f":x: Launch failed: {result.get('launch_error')}",
         )
 
 

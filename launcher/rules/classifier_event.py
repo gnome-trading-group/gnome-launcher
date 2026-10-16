@@ -14,6 +14,7 @@ from launcher.rules.types import (
     ResolvedStrategyConfig,
     ScheduleResult,
     ShutdownEvaluation,
+    bad_profile_names,
     register_rule_type,
     RuleType,
 )
@@ -88,6 +89,12 @@ class ClassifierEventRule(RuleType):
         "required": STRATEGY_REQUIRED_PARAMS,
     }
 
+    def validate_parameters(self, params: dict) -> list[str]:
+        problems = super().validate_parameters(params)
+        if bad := bad_profile_names(params.get("listing_profile_mapping", {}).values()):
+            problems.append(f"listing_profile_mapping must name profiles in lowercase letters and digits only: {', '.join(bad)}")
+        return problems
+
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | None:
         event_ids = data["event_ids"]
         event_names = data["event_names"]
@@ -122,6 +129,9 @@ class ClassifierEventRule(RuleType):
                 continue
 
             resolved_config = ResolvedStrategyConfig.from_params(params, listings=listings)
+            if bad := bad_profile_names(listing_profile_entries.values()):
+                logger.error("Simulation profiles %s must be lowercase letters and digits only - not launching", bad)
+                continue
             if listing_profile_entries:
                 resolved_config.simulation_config = {**resolved_config.simulation_config, **listing_profile_entries}
 
