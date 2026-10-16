@@ -1,6 +1,6 @@
 """What makes a launch rule valid, checked whenever one is created or changed, and what makes a trigger valid for
 its rule type, checked before any rule sees it. A rule that would only fail when a trigger arrives (a missing
-strategy_id, a profile the orchestrator can't read) is refused when it is saved instead."""
+strategy_id, a simulation block the orchestrator can't read) is refused when it is saved instead."""
 from __future__ import annotations
 
 from jsonschema import Draft202012Validator

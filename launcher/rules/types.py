@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -13,6 +12,22 @@ from gnomepy.registry import RegistryClient
 
 from launcher.models import LaunchRule
 
+
+_MODEL_BLOCK = {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}
+# Blocks of how a venue behaves in simulation, in place of its exchange's registry parameters: the shape backtest
+# configs take. The registry checks each block's fields when it launches the session.
+SIMULATION_OVERRIDES_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "fee_model": _MODEL_BLOCK,
+        "network_latency": _MODEL_BLOCK,
+        "order_processing_latency": _MODEL_BLOCK,
+        "market_data_latency": _MODEL_BLOCK,
+        "queue_model": _MODEL_BLOCK,
+        "self_trade_prevention": {"enum": ["CANCEL_INCOMING", "CANCEL_RESTING"]},
+    },
+    "additionalProperties": False,
+}
 
 STRATEGY_PARAMS_SCHEMA: dict = {
     "strategy_id": {"type": "integer"},
@@ -29,22 +44,28 @@ STRATEGY_PARAMS_SCHEMA: dict = {
         "type": "object",
         "additionalProperties": True,
     },
-    "simulation_config": {
+    # Paper sessions, by exchange code or listing id. The registry pins the session's as_of when it launches it.
+    "simulation": {
         "type": "object",
-        "additionalProperties": True,
+        "properties": {
+            "seed": {"type": "integer"},
+            "exchanges": {"type": "object", "additionalProperties": SIMULATION_OVERRIDES_SCHEMA},
+            "listings": {
+                "type": "object",
+                "propertyNames": {"pattern": "^[0-9]+$"},
+                "additionalProperties": SIMULATION_OVERRIDES_SCHEMA,
+            },
+        },
+        "additionalProperties": False,
+    },
+    # Orchestrator properties set for the session (overrides.<property> in its config), as a deploy sets them.
+    "overrides": {
+        "type": "object",
+        "additionalProperties": {"type": "string"},
     },
 }
 
 STRATEGY_REQUIRED_PARAMS: list[str] = ["strategy_id", "strategy_type", "strategy_class", "mode"]
-
-# A session's config travels to the orchestrator as environment variables: simulation.profiles.<name>.… becomes
-# SIMULATION_PROFILES_<NAME>_…, which bash refuses if the name has a '-', and gnome-core turns back into a property
-# by lowercasing it and reading every '_' as '.'. Only lowercase letters and digits survive the round trip.
-PROFILE_NAME = re.compile(r"[a-z0-9]+")
-
-
-def bad_profile_names(names) -> list[str]:
-    return sorted({n for n in names if not PROFILE_NAME.fullmatch(n)})
 
 
 @dataclass
@@ -57,12 +78,13 @@ class ResolvedStrategyConfig:
     research_commit: str | None = None
     region: str | None = None
     strategy_args: dict[str, Any] = field(default_factory=dict)
-    simulation_config: dict[str, Any] = field(default_factory=dict)
+    simulation: dict[str, Any] = field(default_factory=dict)
     instance_type: str | None = None
     latency_profile: str | None = None
     orchestrator_version: str | None = None
     gnomepy_version: str | None = None
     availability_zone: str | None = None
+    overrides: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_params(cls, params: dict, *, listings: list[int]) -> ResolvedStrategyConfig:
@@ -74,10 +96,11 @@ class ResolvedStrategyConfig:
             listings=listings,
             research_commit=params.get("research_commit"),
             strategy_args=params.get("strategy_args", {}),
-            simulation_config=params.get("simulation_config", {}),
+            simulation=params.get("simulation", {}),
             instance_type=params.get("instance_type"),
             latency_profile=params.get("latency_profile"),
             orchestrator_version=params.get("orchestrator_version"),
+            overrides=params.get("overrides", {}),
             gnomepy_version=params.get("gnomepy_version"),
             availability_zone=params.get("availability_zone"),
         )
@@ -139,10 +162,7 @@ class RuleType:
 
     def validate_parameters(self, params: dict) -> list[str]:
         """Checks beyond parameter_schema; each problem as one message."""
-        names = {k.split(".")[2] for k in params.get("simulation_config", {})
-                 if k.startswith("simulation.profiles.") and k.count(".") >= 3}
-        bad = bad_profile_names(names)
-        return [f"simulation profile names must be lowercase letters and digits only: {', '.join(bad)}"] if bad else []
+        return []
 
 
 RULE_TYPE_REGISTRY: dict[str, type[RuleType]] = {}

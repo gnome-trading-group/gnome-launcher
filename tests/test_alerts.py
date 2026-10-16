@@ -9,7 +9,7 @@ from launcher.rules.types import ResolvedStrategyConfig
 def _config():
     return ResolvedStrategyConfig(
         strategy_id=7, strategy_type="python", strategy_class="Strat", mode="live", listings=[1, 2],
-        research_commit=None, region=None, strategy_args={}, simulation_config={},
+        research_commit=None, region=None, strategy_args={}, simulation={},
     )
 
 

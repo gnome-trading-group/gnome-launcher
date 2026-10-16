@@ -5,8 +5,7 @@ import pytest
 
 from launcher.handlers.api import api_trigger, launch_rules
 
-PROFILE = {f"simulation.profiles.kalshi.{k}": v for k, v in
-           {"fee.model": "parametric", "fee.taker.rate": 0.07, "fee.maker.rate": 2.0}.items()}
+SIMULATION = {"exchanges": {"KALSHI": {"fee_model": {"type": "parametric", "taker_fee_rate": 0.07, "maker_fee_rate": 2.0}}}}
 CS2_RULE = {
     "name": "CS2 series (paper)",
     "rule_type": "cs2",
@@ -15,7 +14,7 @@ CS2_RULE = {
     "parameters": {
         "strategy_id": 5, "strategy_type": "python", "mode": "paper",
         "strategy_class": "gnomepy_research.sessions.cs2_series.strategy:CS2Series",
-        "venues": ["kalshi"], "simulation_config": PROFILE,
+        "venues": ["kalshi"], "simulation": SIMULATION,
     },
 }
 
@@ -32,7 +31,7 @@ def test_a_created_rule_reads_back_exactly(aws):
     assert status == 201 and created["status"] == "active" and created["cooldown_minutes"] == 0
     _, fetched = call("GET", rule_id=created["rule_id"])
     assert fetched["parameters"] == CS2_RULE["parameters"]
-    assert type(fetched["parameters"]["simulation_config"]["simulation.profiles.kalshi.fee.maker.rate"]) is float
+    assert type(fetched["parameters"]["simulation"]["exchanges"]["KALSHI"]["fee_model"]["maker_fee_rate"]) is float
 
 
 @pytest.mark.parametrize("change, problem", [
@@ -42,8 +41,11 @@ def test_a_created_rule_reads_back_exactly(aws):
     ({"max_concurrent_sessions": 0}, "max_concurrent_sessions"),
     ({"launch_path": "sometimes"}, "launch_path"),
     ({"rule_type": "nope"}, "unknown rule type"),
-    ({"parameters": {**CS2_RULE["parameters"], "venues": ["kalshi", "polymarket"]}}, "doesn't define"),
-    ({"parameters": {**CS2_RULE["parameters"], "simulation_profiles": {"kalshi": "kalshi_v2"}}}, "lowercase"),
+    ({"parameters": {**CS2_RULE["parameters"], "simulation": {"profiles": {}}}}, "parameters.simulation"),
+    ({"parameters": {**CS2_RULE["parameters"], "simulation": {"exchanges": {"KALSHI": {"network_latency": {}}}}}},
+     "'type' is a required property"),
+    ({"parameters": {**CS2_RULE["parameters"], "simulation": {"exchanges": {"KALSHI": {"fee": {}}}}}},
+     "parameters.simulation.exchanges.KALSHI"),
 ])
 def test_a_rule_that_would_fail_later_is_refused_now(aws, change, problem):
     status, body = call("POST", {**CS2_RULE, **change})

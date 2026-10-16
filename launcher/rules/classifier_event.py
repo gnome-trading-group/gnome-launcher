@@ -15,7 +15,6 @@ from launcher.rules.types import (
     ResolvedStrategyConfig,
     ScheduleResult,
     ShutdownEvaluation,
-    bad_profile_names,
     register_rule_type,
     RuleType,
 )
@@ -80,21 +79,10 @@ class ClassifierEventRule(RuleType):
                 "items": {"type": "integer"},
                 "description": "Only include listings from these exchange IDs",
             },
-            "listing_profile_mapping": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "Maps exchange_id (as string) to simulation profile name for dynamically resolved listings",
-            },
             **STRATEGY_PARAMS_SCHEMA,
         },
         "required": STRATEGY_REQUIRED_PARAMS,
     }
-
-    def validate_parameters(self, params: dict) -> list[str]:
-        problems = super().validate_parameters(params)
-        if bad := bad_profile_names(params.get("listing_profile_mapping", {}).values()):
-            problems.append(f"listing_profile_mapping must name profiles in lowercase letters and digits only: {', '.join(bad)}")
-        return problems
 
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
         event_ids = data["event_ids"]
@@ -130,17 +118,12 @@ class ClassifierEventRule(RuleType):
                 skipped.append(f"{event_name}: none of the required relationship types")
                 continue
 
-            listings, listing_profile_entries = self._resolve_listings(contracts, params, ctx)
+            listings = self._resolve_listings(contracts, params, ctx)
             if not listings:
                 skipped.append(f"{event_name}: no listings resolved")
                 continue
 
             resolved_config = ResolvedStrategyConfig.from_params(params, listings=listings)
-            if bad := bad_profile_names(listing_profile_entries.values()):
-                skipped.append(f"{event_name}: simulation profiles {bad} must be lowercase letters and digits only")
-                continue
-            if listing_profile_entries:
-                resolved_config.simulation_config = {**resolved_config.simulation_config, **listing_profile_entries}
 
             return RuleEvaluation(
                 should_launch=True,
@@ -242,26 +225,19 @@ class ClassifierEventRule(RuleType):
 
     def _resolve_listings(
         self, contracts, params: dict, ctx: RuleContext
-    ) -> tuple[list[int] | None, dict[str, str]]:
+    ) -> list[int] | None:
         if params.get("listing_resolution") == "static":
             raw = params.get("static_listings")
             if isinstance(raw, str):
-                return [int(x.strip()) for x in raw.split(",") if x.strip()], {}
-            return raw, {}
+                return [int(x.strip()) for x in raw.split(",") if x.strip()]
+            return raw
 
-        listing_profile_mapping: dict[str, str] = params.get("listing_profile_mapping", {})
         listing_ids = []
-        listing_profile_entries: dict[str, str] = {}
         exchange_filter = params.get("exchange_filter")
         for contract in contracts:
             resolved = ctx.registry.get_listing(security_id=contract.security_id)
             for listing in resolved:
                 if not exchange_filter or listing.exchange_id in exchange_filter:
                     listing_ids.append(listing.listing_id)
-                    profile = listing_profile_mapping.get(str(listing.exchange_id))
-                    if profile:
-                        listing_profile_entries[f"simulation.listing.{listing.listing_id}.profile"] = profile
 
-        if not listing_ids:
-            return None, {}
-        return listing_ids, listing_profile_entries
+        return listing_ids or None

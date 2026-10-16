@@ -164,9 +164,9 @@ def slack_click(ctx, monkeypatch):
     monkeypatch.setattr(interaction, "_lambda_client", lam)
     monkeypatch.setattr(interaction, "SlackClient", lambda: ctx.slack)
 
-    def click(action_id, request_id, username="mason"):
+    def click(action_id, request_id, username="mason", action=None):
         body = urlencode({"payload": json.dumps({
-            "actions": [{"action_id": action_id, "value": request_id}], "user": {"id": "U1", "username": username}})})
+            "actions": [action or {"action_id": action_id, "value": request_id}], "user": {"id": "U1", "username": username}})})
         ts = str(int(time.time()))
         sig = "v0=" + hmac.new(SIGNING_SECRET.encode(), f"v0:{ts}:{body}".encode(), hashlib.sha256).hexdigest()
         return interaction.handler({"headers": {"x-slack-request-timestamp": ts, "x-slack-signature": sig},
@@ -195,6 +195,14 @@ def test_an_approval_rule_waits_for_slack(ctx, make_rule):
 
     [request] = requests_of(ctx, rule)
     assert request["status"] == "PENDING_APPROVAL" and request["slack_message_ts"] and not ctx.registry.sessions
+
+
+def test_a_link_button_on_another_message_is_acknowledged_and_ignored(ctx, slack_click):
+    # An alert's "Runbook" button: Slack reports the click with a url and no value.
+    response = slack_click(None, None, action={"action_id": "WHk", "type": "button", "url": "https://example.com/runbook"})
+
+    assert response["statusCode"] == 200
+    assert not slack_click.lambda_client.invoked and not ctx.slack.sent
 
 
 def test_a_double_click_approval_launches_once(ctx, make_rule, slack_click, run_async):
@@ -339,3 +347,17 @@ def test_a_double_click_shutdown_approval_stops_once(ctx, make_rule, slack_click
     run_async(slack_click)
 
     assert ctx.dynamo.get_request(shutdown["request_id"])["status"] == "STOPPED" and len(ctx.registry.stopped) == 1
+
+
+def test_a_direct_launch_trigger_carries_everything_a_deploy_does(ctx, make_rule):
+    rule = make_rule(rule_type="direct_launch", parameters={})
+    data = {**STRATEGY, "listings": [7, 8], "strategy_args": {"edge": 0.05, "dry": False, "legs": [1, 2]},
+            "instance_type": "c7i.large", "latency_profile": "standard", "overrides": {"oms.max.orders": "5"}}
+
+    trigger_processor.process({"rule_type": "direct_launch", "data": data}, ctx)
+
+    [request] = requests_of(ctx, rule)
+    session = ctx.registry.sessions[request["session_id"]]
+    assert request["status"] == "LAUNCHED" and session.config["strategy.args.edge"] == 0.05
+    assert session.config["strategy.args.legs"] == [1, 2] and session.config["overrides.oms.max.orders"] == "5"
+    assert session.config["latency.profile"] == "standard"

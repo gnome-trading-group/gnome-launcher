@@ -34,8 +34,11 @@ def build_session_config(resolved_config: ResolvedStrategyConfig, rule_id: str) 
         result["latency.profile"] = resolved_config.latency_profile
     for k, v in resolved_config.strategy_args.items():
         result[f"strategy.args.{k}"] = v
-    for k, v in resolved_config.simulation_config.items():
-        result[k] = v
+    # Paper sessions only: with nothing set, each listing simulates as its exchange is recorded in the registry.
+    if resolved_config.mode == "paper":
+        result["simulation"] = resolved_config.simulation
+    for k, v in resolved_config.overrides.items():
+        result[f"overrides.{k}"] = v
     return result
 
 

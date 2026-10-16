@@ -1,3 +1,4 @@
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 from launcher.rules.types import ResolvedStrategyConfig
@@ -75,3 +76,18 @@ def test_from_params_reads_launch_options():
     )
     assert config.instance_type == "c7i.xlarge"
     assert config.latency_profile == "standard"
+
+
+def test_orchestrator_overrides_travel_as_a_deploy_sends_them():
+    config = build_session_config(_config(overrides={"oms.max.orders": "5"}), "r1")
+
+    assert config["overrides.oms.max.orders"] == "5"
+
+
+def test_a_paper_session_carries_its_simulation_and_a_live_one_none():
+    simulation = {"seed": 3, "exchanges": {"KALSHI": {"queue_model": {"type": "optimistic"}}}}
+    assert build_session_config(_config(simulation=simulation), "r1")["simulation"] == simulation
+    # Empty still goes, so the registry pins the time this session reads each exchange's parameters at.
+    assert build_session_config(_config(), "r1")["simulation"] == {}
+    live = replace(_config(simulation=simulation), mode="live")
+    assert "simulation" not in build_session_config(live, "r1")

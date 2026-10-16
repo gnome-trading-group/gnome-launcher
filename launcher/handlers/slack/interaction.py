@@ -42,6 +42,9 @@ def _verify_signature(body: str, timestamp: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+ACTIONS = {"launch_approve", "launch_reject", "shutdown_approve", "shutdown_reject", "schedule_modify", "schedule_cancel"}
+
+
 def handler(event, context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     timestamp = headers.get("x-slack-request-timestamp", "")
@@ -61,8 +64,12 @@ def handler(event, context):
     if payload_type == "view_submission":
         return _handle_view_submission(payload, dynamo, slack)
 
+    # Slack sends this app every click on any of its messages, including link buttons on the alerts it posts, which
+    # carry no request; those are acknowledged and left alone.
     action = payload["actions"][0]
-    action_id = action["action_id"]
+    action_id = action.get("action_id")
+    if action_id not in ACTIONS or "value" not in action:
+        return {"statusCode": 200, "body": ""}
     request_id = action["value"]
     user_id = payload["user"]["id"]
     username = payload["user"].get("username") or payload["user"].get("name", "unknown")

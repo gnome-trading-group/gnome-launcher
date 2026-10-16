@@ -9,10 +9,7 @@ from launcher.rules.cs2 import CS2Rule
 from launcher.rules.types import NoMatch
 
 NOW = pd.Timestamp("2026-10-16T00:00:00Z")
-PROFILES = {
-    "simulation.profiles.kalshi.fee.model": "parametric",
-    "simulation.profiles.polymarketintl.fee.model": "parametric",
-}
+SIMULATION = {"exchanges": {"KALSHI": {"queue_model": {"type": "optimistic"}}}}
 
 
 def _data(venue="kalshi", market="series"):
@@ -22,7 +19,7 @@ def _data(venue="kalshi", market="series"):
 def _params(**overrides):
     return {"strategy_id": 7, "strategy_type": "python", "mode": "paper",
             "strategy_class": "gnomepy_research.sessions.cs2_series.strategy:CS2Series",
-            "research_commit": "933d27f", "simulation_config": dict(PROFILES), **overrides}
+            "research_commit": "933d27f", **overrides}
 
 
 def _ctx(registered=(11, 12), sessions=()):
@@ -33,22 +30,20 @@ def _ctx(registered=(11, 12), sessions=()):
     return ctx
 
 
-def test_launches_one_session_with_the_venues_profile():
+def test_launches_one_session_for_the_match_on_the_venue():
     evaluation = CS2Rule().evaluate(_data(), _params(), _ctx())
 
     config = evaluation.resolved_config
     assert config.listings == [11, 12] and config.research_commit == "933d27f"
     assert config.strategy_args == {"match_id": 2399262, "listing_team_a": 11, "listing_team_b": 12}
-    assert config.simulation_config["simulation.listing.11.profile"] == "kalshi"
-    assert config.simulation_config["simulation.listing.12.profile"] == "kalshi"
+    # Nothing to set: each venue's session simulates as its exchange is recorded in the registry.
+    assert config.simulation == {}
 
 
-def test_rule_overrides_profiles():
-    params = _params(simulation_profiles={"kalshi": "polymarketintl"})
-
-    config = CS2Rule().evaluate(_data(), params, _ctx()).resolved_config
-
-    assert config.simulation_config["simulation.listing.11.profile"] == "polymarketintl"
+def test_every_venues_session_carries_the_rules_simulation_overrides():
+    for venue in ("kalshi", "polymarket", "polymarket_us"):
+        config = CS2Rule().evaluate(_data(venue=venue), _params(simulation=SIMULATION), _ctx()).resolved_config
+        assert config.simulation == SIMULATION, venue
 
 
 def test_skips_other_markets_venues_and_unregistered_listings():
@@ -56,19 +51,6 @@ def test_skips_other_markets_venues_and_unregistered_listings():
     assert "series market" in rule.evaluate(_data(market="game1"), _params(), _ctx()).reason
     assert "venues" in rule.evaluate(_data(venue="polymarket_us"), _params(venues=["kalshi"]), _ctx()).reason
     assert "[12]" in rule.evaluate(_data(), _params(), _ctx(registered=(11,))).reason
-
-
-def test_refuses_paper_without_the_venues_profile_defined():
-    assert "isn't defined" in CS2Rule().evaluate(_data(venue="polymarket_us"), _params(), _ctx()).reason
-    live = CS2Rule().evaluate(_data(venue="polymarket_us"), _params(mode="live", simulation_config={}), _ctx())
-    assert live.resolved_config.simulation_config == {}
-
-
-def test_refuses_profile_names_that_wont_survive_the_trip_to_the_orchestrator():
-    for name in ("polymarket_intl", "polymarket-intl", "Kalshi"):
-        params = _params(simulation_profiles={"kalshi": name},
-                         simulation_config={**PROFILES, f"simulation.profiles.{name}.fee.model": "parametric"})
-        assert isinstance(CS2Rule().evaluate(_data(), params, _ctx()), NoMatch), name
 
 
 def test_shuts_down_the_sessions_holding_the_matchs_listings():
