@@ -605,14 +605,14 @@ tqdm = ["tqdm"]
 
 [[package]]
 name = "gnomepy"
-version = "2.26.2"
+version = "2.28.1"
 description = ""
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "gnomepy-2.26.2-py3-none-any.whl", hash = "sha256:ff1301b83d6235ce15d9ae5da9d646b819db655d698b55160d2f6fc8841c8edc"},
-    {file = "gnomepy-2.26.2.tar.gz", hash = "sha256:5bf7e0e7d8ed5ac29f661eb5f799edba0acf40e04acbf6459357f6087acc377c"},
+    {file = "gnomepy-2.28.1-py3-none-any.whl", hash = "sha256:c1cc6a9011ccfb1e4188fe5d7c87220414cabb709b873e0530e377427ee53a33"},
+    {file = "gnomepy-2.28.1.tar.gz", hash = "sha256:a216cb847931feddcab3e8c06adbd17b52281723438bc41f0a4939d2ccee0094"},
 ]
 
 [package.dependencies]
@@ -2702,4 +2702,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "fffa6c36f6e77db02e67bfb6a2817e4e68c4e5958dbffb0ca930e49685c7cc75"
+content-hash = "9363d91a9bbfc0e9fcbc2c91e9d2867001c7fa39599924708b3624dfc4000a74"

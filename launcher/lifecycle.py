@@ -104,11 +104,11 @@ def fail(ctx: RuleContext, request: LaunchRequest, expected: str, rule_name: str
 
 
 def stop(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str, actor: str) -> LaunchRequest | None:
-    """Stops the sessions of a request already STOPPING."""
+    """Stops the sessions of a request already STOPPING. `reason` is recorded on each session as why it stopped."""
     errors = []
     for session_id in request.get("target_session_ids") or []:
         try:
-            ctx.registry.stop_strategy_session_as_service(session_id, actor=actor)
+            ctx.registry.stop_strategy_session_as_service(session_id, actor=actor, reason=reason)
         except Exception as e:
             logger.exception("Failed to stop session %s", session_id)
             errors.append({"session_id": session_id, "error": alerts.describe(e)})

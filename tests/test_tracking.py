@@ -84,9 +84,11 @@ def test_a_launched_request_follows_its_session_until_it_ends(ctx, make_rule):
     assert ctx.dynamo.get_request(request["request_id"])["session_status"] == "RUNNING"
 
     session.status, session.stopped_at = "STOPPED", "2026-10-16T08:30:00Z"
+    session.stopped_by, session.stop_reason = "strategy", "match went live"
     sweeper.sweep(ctx)
     ended = ctx.dynamo.get_request(request["request_id"])
     assert ended["session_status"] == "STOPPED" and ended["session_stopped_at"] == "2026-10-16T08:30:00Z"
+    assert ended["session_stopped_by"] == "strategy" and ended["session_stop_reason"] == "match went live"
     assert "tracking" not in ended and ctx.dynamo.tracked_requests() == []
 
 

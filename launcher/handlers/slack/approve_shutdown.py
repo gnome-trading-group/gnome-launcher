@@ -23,7 +23,9 @@ def handler(event, context):
     if request is None:
         logger.info("Shutdown request %s is no longer approved and waiting; nothing to do", request_id)
         return
-    result = lifecycle.stop(ctx, request, request["matched_rule_name"], f"approved by @{username}", actor)
+    # The rule's reason for the shutdown, not the approval: who approved it is recorded as the actor.
+    reason = (request.get("events") or [{}])[0].get("note") or f"approved by @{username}"
+    result = lifecycle.stop(ctx, request, request["matched_rule_name"], reason, actor)
     target_session_ids = request.get("target_session_ids") or []
     if result is not None and result["status"] == "STOP_FAILED":
         errors = json.loads(result["launch_error"])

@@ -335,6 +335,7 @@ def test_a_shutdown_stops_only_the_sessions_its_rule_launched(ctx, make_rule):
     shutdown_processor.process({"rule_type": "probe", "data": {"listings": [1]}}, ctx)
 
     assert ctx.registry.stopped == [(launched, "launcher:probe rule")]
+    assert ctx.registry.stop_reasons == ["probe shutdown"]
     shutdown = requests_of(ctx, rule)[-1]
     assert shutdown["action"] == "shutdown" and shutdown["status"] == "STOPPED"
     assert shutdown["target_session_ids"] == [launched]
@@ -363,6 +364,8 @@ def test_a_double_click_shutdown_approval_stops_once(ctx, make_rule, slack_click
     run_async(slack_click)
 
     assert ctx.dynamo.get_request(shutdown["request_id"])["status"] == "STOPPED" and len(ctx.registry.stopped) == 1
+    # The session records the rule's reason; the approver is recorded as who stopped it.
+    assert ctx.registry.stop_reasons == ["probe shutdown"]
 
 
 def test_a_direct_launch_trigger_carries_everything_a_deploy_does(ctx, make_rule):

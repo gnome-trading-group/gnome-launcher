@@ -58,6 +58,8 @@ class LaunchRequest(TypedDict):
     session_started_at: str | None
     session_stopped_at: str | None
     session_failure_reason: str | None
+    session_stop_reason: str | None
+    session_stopped_by: str | None
     date_created: str
     date_modified: str
 

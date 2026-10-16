@@ -73,6 +73,7 @@ def _follow_session(ctx: RuleContext, request: LaunchRequest) -> None:
         request["request_id"], ended=session.status in ENDED_SESSION_STATUSES,
         session_status=session.status, session_started_at=session.started_at,
         session_stopped_at=session.stopped_at, session_failure_reason=session.failure_reason,
+        session_stop_reason=session.stop_reason, session_stopped_by=session.stopped_by,
     )
 
 

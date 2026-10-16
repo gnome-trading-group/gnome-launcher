@@ -67,6 +67,7 @@ class FakeRegistry:
         self.sessions: dict[str, SimpleNamespace] = {}
         self.alerts: list[dict] = []
         self.stopped: list[tuple[str, str]] = []
+        self.stop_reasons: list[str | None] = []
         self.on_create = None
 
     def create_strategy_session(self, session_id, strategy_id, mode, config, **kwargs):
@@ -78,7 +79,8 @@ class FakeRegistry:
     def add(self, session_id, strategy_id, mode, config, status="SUBMITTED", failure_reason=None):
         self.sessions[session_id] = SimpleNamespace(session_id=session_id, strategy_id=strategy_id, mode=mode,
                                                     config=config, status=status, failure_reason=failure_reason,
-                                                    started_at=None, stopped_at=None)
+                                                    started_at=None, stopped_at=None, stop_reason=None,
+                                                    stopped_by=None)
 
     def get_strategy_sessions(self, session_id=None, strategy_id=None, status=None):
         wanted = set(status.split(",")) if status else None
@@ -87,9 +89,11 @@ class FakeRegistry:
                 and (strategy_id is None or s.strategy_id == strategy_id)
                 and (wanted is None or s.status in wanted)]
 
-    def stop_strategy_session_as_service(self, session_id, actor):
+    def stop_strategy_session_as_service(self, session_id, actor, reason=None):
         self.stopped.append((session_id, actor))
-        self.sessions[session_id].status = "STOPPING"
+        self.stop_reasons.append(reason)
+        session = self.sessions[session_id]
+        session.status, session.stopped_by, session.stop_reason = "STOPPING", actor, reason
 
     def get_listing(self, listing_id=None, **_):
         return [SimpleNamespace(listing_id=listing_id)]
