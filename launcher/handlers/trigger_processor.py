@@ -9,7 +9,6 @@ import uuid
 from gnomepy.registry import RegistryClient
 
 from launcher import alerts, lifecycle
-from launcher.config import config
 from launcher.dynamo import DynamoClient
 from launcher.models import LaunchRequest, LaunchRule
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
@@ -70,7 +69,7 @@ def process(message: dict, ctx: RuleContext) -> None:
 
 def _start(rule: LaunchRule, evaluation: RuleEvaluation, trigger: dict, key: str, ctx: RuleContext) -> LaunchRequest:
     data = trigger["data"]
-    launch_path = rule["launch_path"] if config.SLACK_INTERACTION_ENABLED else "auto"
+    launch_path = rule["launch_path"]
     schedule = None
     if rule.get("schedule_enabled"):
         schedule = RULE_TYPE_REGISTRY[rule["rule_type"]]().compute_schedule_time(data, rule["parameters"], ctx)

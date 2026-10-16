@@ -254,6 +254,22 @@ def test_an_approval_slack_couldnt_post_still_waits_for_the_controller(ctx, make
     assert request["status"] == "PENDING_APPROVAL" and request["slack_message_ts"] is None
 
 
+
+def test_approvals_hold_on_a_stage_with_no_slack_channel(ctx, make_rule):
+    # Dev posts nothing to Slack; launches and shutdowns there wait for an approval from the controller all the same.
+    rule = make_rule(launch_path="approval", shutdown_path="approval")
+    ctx.slack.fail = True
+
+    trigger(ctx, [1])
+    [launch] = requests_of(ctx, rule)
+    assert launch["status"] == "PENDING_APPROVAL" and launch["launch_path"] == "approval" and not ctx.registry.sessions
+
+    ctx.dynamo.transition(launch["request_id"], "PENDING_APPROVAL", "APPROVED", actor="ui:someone")
+    lifecycle.launch(ctx, ctx.dynamo.get_request(launch["request_id"]), rule["name"], "approved", "ui:someone")
+    shutdown_processor.process({"rule_type": "probe", "data": {"listings": [1]}}, ctx)
+    shutdown = requests_of(ctx, rule)[-1]
+    assert shutdown["status"] == "PENDING_SHUTDOWN_APPROVAL" and not ctx.registry.stopped
+
 # ---- schedules -----------------------------------------------------------------------------------------------------
 
 def _schedules():

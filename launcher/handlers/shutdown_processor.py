@@ -8,7 +8,6 @@ import uuid
 from gnomepy.registry import RegistryClient
 
 from launcher import alerts, lifecycle
-from launcher.config import config
 from launcher.dynamo import DynamoClient
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
 from launcher.rules.types import NoMatch, RuleContext
@@ -61,7 +60,7 @@ def process(message: dict, ctx: RuleContext) -> None:
             ctx.dynamo.record_evaluation(trigger, "NO_MATCH", "none of the matching sessions were launched by this rule", rule)
             continue
 
-        shutdown_path = (rule.get("shutdown_path") or "auto") if config.SLACK_INTERACTION_ENABLED else "auto"
+        shutdown_path = rule.get("shutdown_path") or "auto"
         request = ctx.dynamo.create_launch_request(
             rule_type=rule_type, data=data, dedup_key=key, resolved_config={},
             matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"], launch_path=shutdown_path,
