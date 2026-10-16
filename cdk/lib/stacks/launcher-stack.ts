@@ -152,23 +152,6 @@ export class LauncherStack extends cdk.Stack {
       deadLetterQueue: { queue: shutdownDlq, maxReceiveCount: 3 },
     });
 
-    // The standard queues the FIFO ones replaced, kept for one more release: the monitoring stack imports their
-    // names, and CloudFormation won't delete an export in the same deploy that stops the importer using it. Once a
-    // release with the monitoring stack on the FIFO queues is out, delete these four queues and their exportValue.
-    const retiredLauncherDlq = new sqs.Queue(this, 'LauncherDlq', { retentionPeriod: cdk.Duration.days(14) });
-    const retiredLauncherQueue = new sqs.Queue(this, 'LauncherQueue', {
-      visibilityTimeout: cdk.Duration.minutes(5),
-      deadLetterQueue: { queue: retiredLauncherDlq, maxReceiveCount: 3 },
-    });
-    const retiredShutdownDlq = new sqs.Queue(this, 'ShutdownDlq', { retentionPeriod: cdk.Duration.days(14) });
-    const retiredShutdownQueue = new sqs.Queue(this, 'ShutdownQueue', {
-      visibilityTimeout: cdk.Duration.minutes(5),
-      deadLetterQueue: { queue: retiredShutdownDlq, maxReceiveCount: 3 },
-    });
-    for (const retired of [retiredLauncherDlq, retiredLauncherQueue, retiredShutdownDlq, retiredShutdownQueue]) {
-      this.exportValue(retired.queueName);
-    }
-
     this.queues = [
       { name: 'Launcher', queue: launcherQueue, dlq: launcherDlq },
       { name: 'ClassifierAdapter', queue: classifierAdapterQueue, dlq: classifierAdapterDlq },
