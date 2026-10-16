@@ -10,6 +10,7 @@ from launcher.rules.types import (
     STRATEGY_PARAMS_SCHEMA,
     STRATEGY_REQUIRED_PARAMS,
     RuleContext,
+    NoMatch,
     RuleEvaluation,
     ResolvedStrategyConfig,
     ScheduleResult,
@@ -95,18 +96,21 @@ class ClassifierEventRule(RuleType):
             problems.append(f"listing_profile_mapping must name profiles in lowercase letters and digits only: {', '.join(bad)}")
         return problems
 
-    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | None:
+    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
         event_ids = data["event_ids"]
         event_names = data["event_names"]
+        skipped: list[str] = []
 
         for event_id, event_name in zip(event_ids, event_names):
             events = ctx.registry.get_event(event_id=event_id)
             if not events:
+                skipped.append(f"{event_name}: not in the registry")
                 continue
             event = events[0]
 
             allowed = params.get("allowed_categories")
             if allowed and event.category not in allowed:
+                skipped.append(f"{event_name}: category {event.category} isn't allowed")
                 continue
 
             contracts = ctx.registry.get_event_contracts(event_id=event_id)
@@ -117,20 +121,23 @@ class ClassifierEventRule(RuleType):
                 all_relationships.extend(ctx.registry.get_contract_relationships(security_id=sid))
 
             if len(all_relationships) < params.get("min_relationships", 1):
+                skipped.append(f"{event_name}: {len(all_relationships)} relationship(s), fewer than required")
                 continue
 
             required_types = set(params.get("required_relationship_types", []))
             found_types = {r.relationship_type for r in all_relationships}
             if required_types and not required_types & found_types:
+                skipped.append(f"{event_name}: none of the required relationship types")
                 continue
 
             listings, listing_profile_entries = self._resolve_listings(contracts, params, ctx)
             if not listings:
+                skipped.append(f"{event_name}: no listings resolved")
                 continue
 
             resolved_config = ResolvedStrategyConfig.from_params(params, listings=listings)
             if bad := bad_profile_names(listing_profile_entries.values()):
-                logger.error("Simulation profiles %s must be lowercase letters and digits only - not launching", bad)
+                skipped.append(f"{event_name}: simulation profiles {bad} must be lowercase letters and digits only")
                 continue
             if listing_profile_entries:
                 resolved_config.simulation_config = {**resolved_config.simulation_config, **listing_profile_entries}
@@ -144,19 +151,16 @@ class ClassifierEventRule(RuleType):
                 ),
             )
 
-        return None
+        return NoMatch("; ".join(skipped) or "no events")
 
-    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | None:
+    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | NoMatch:
         event_ids = data["event_ids"]
         event_names = data["event_names"]
 
-        strategy_id = params.get("strategy_id")
-        if not strategy_id:
-            return None
-
+        strategy_id = params["strategy_id"]
         running_sessions = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status=ACTIVE_SESSION_STATUSES)
         if not running_sessions:
-            return None
+            return NoMatch("no running session of the strategy")
 
         resolved_listing_ids: set[int] = set()
         for event_id in event_ids:
@@ -166,7 +170,7 @@ class ClassifierEventRule(RuleType):
                 resolved_listing_ids.update(l.listing_id for l in listings)
 
         if not resolved_listing_ids:
-            return None
+            return NoMatch("the resolved events have no listings")
 
         target_session_ids = [
             s.session_id
@@ -174,7 +178,7 @@ class ClassifierEventRule(RuleType):
             if listing_ids(s.config.get("listings", [])) & resolved_listing_ids
         ]
         if not target_session_ids:
-            return None
+            return NoMatch("no running session holds the resolved events' listings")
 
         names_preview = ", ".join(event_names[:3]) + ("..." if len(event_names) > 3 else "")
         return ShutdownEvaluation(

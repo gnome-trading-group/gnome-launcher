@@ -6,6 +6,7 @@ import pandas as pd
 
 from launcher.handlers.custom.cs2_scanner import latest, triggers
 from launcher.rules.cs2 import CS2Rule
+from launcher.rules.types import NoMatch
 
 NOW = pd.Timestamp("2026-10-16T00:00:00Z")
 PROFILES = {
@@ -52,13 +53,13 @@ def test_rule_overrides_profiles():
 
 def test_skips_other_markets_venues_and_unregistered_listings():
     rule = CS2Rule()
-    assert rule.evaluate(_data(market="game1"), _params(), _ctx()) is None
-    assert rule.evaluate(_data(venue="polymarket_us"), _params(venues=["kalshi"]), _ctx()) is None
-    assert rule.evaluate(_data(), _params(), _ctx(registered=(11,))) is None
+    assert "series market" in rule.evaluate(_data(market="game1"), _params(), _ctx()).reason
+    assert "venues" in rule.evaluate(_data(venue="polymarket_us"), _params(venues=["kalshi"]), _ctx()).reason
+    assert "[12]" in rule.evaluate(_data(), _params(), _ctx(registered=(11,))).reason
 
 
 def test_refuses_paper_without_the_venues_profile_defined():
-    assert CS2Rule().evaluate(_data(venue="polymarket_us"), _params(), _ctx()) is None
+    assert "isn't defined" in CS2Rule().evaluate(_data(venue="polymarket_us"), _params(), _ctx()).reason
     live = CS2Rule().evaluate(_data(venue="polymarket_us"), _params(mode="live", simulation_config={}), _ctx())
     assert live.resolved_config.simulation_config == {}
 
@@ -67,7 +68,7 @@ def test_refuses_profile_names_that_wont_survive_the_trip_to_the_orchestrator():
     for name in ("polymarket_intl", "polymarket-intl", "Kalshi"):
         params = _params(simulation_profiles={"kalshi": name},
                          simulation_config={**PROFILES, f"simulation.profiles.{name}.fee.model": "parametric"})
-        assert CS2Rule().evaluate(_data(), params, _ctx()) is None, name
+        assert isinstance(CS2Rule().evaluate(_data(), params, _ctx()), NoMatch), name
 
 
 def test_shuts_down_the_sessions_holding_the_matchs_listings():
@@ -78,7 +79,7 @@ def test_shuts_down_the_sessions_holding_the_matchs_listings():
     evaluation = CS2Rule().evaluate_shutdown(_data(), _params(), _ctx(sessions=sessions))
 
     assert evaluation.target_session_ids == ["a", "b"]
-    assert CS2Rule().evaluate_shutdown(_data(market="game1"), _params(), _ctx(sessions=sessions)) is None
+    assert isinstance(CS2Rule().evaluate_shutdown(_data(market="game1"), _params(), _ctx(sessions=sessions)), NoMatch)
 
 
 def _row(match_id, kickoff, status="upcoming", legs=(("kalshi", "series"),), generated_at=NOW):

@@ -18,10 +18,11 @@ os.environ.update({
     "SCHEDULER_ROLE_ARN": "arn:aws:iam::123456789012:role/scheduler",
 })
 
-from launcher.dynamo import REQUESTS_TABLE, RULES_TABLE, DynamoClient  # noqa: E402
+from launcher.dynamo import REQUESTS_TABLE, REVISIONS_TABLE, RULES_TABLE, TRIGGERS_TABLE, DynamoClient  # noqa: E402
 from launcher.rules.types import (  # noqa: E402
     STRATEGY_PARAMS_SCHEMA,
     STRATEGY_REQUIRED_PARAMS,
+    NoMatch,
     ResolvedStrategyConfig,
     RuleContext,
     RuleEvaluation,
@@ -53,7 +54,7 @@ class ProbeRule(RuleType):
     def evaluate_shutdown(self, data, params, ctx):
         running = ctx.registry.get_strategy_sessions(strategy_id=params["strategy_id"], status="SUBMITTED,STARTING,RUNNING")
         targets = [s.session_id for s in running if listing_ids(s.config["listings"]) & set(data["listings"])]
-        return ShutdownEvaluation(True, targets, "probe shutdown") if targets else None
+        return ShutdownEvaluation(True, targets, "probe shutdown") if targets else NoMatch("nothing to stop")
 
     def compute_schedule_time(self, data, params, ctx):
         if "launch_at" not in data:
@@ -76,7 +77,8 @@ class FakeRegistry:
 
     def add(self, session_id, strategy_id, mode, config, status="SUBMITTED", failure_reason=None):
         self.sessions[session_id] = SimpleNamespace(session_id=session_id, strategy_id=strategy_id, mode=mode,
-                                                    config=config, status=status, failure_reason=failure_reason)
+                                                    config=config, status=status, failure_reason=failure_reason,
+                                                    started_at=None, stopped_at=None)
 
     def get_strategy_sessions(self, session_id=None, strategy_id=None, status=None):
         wanted = set(status.split(",")) if status else None
@@ -144,9 +146,24 @@ def aws():
             TableName=REQUESTS_TABLE, BillingMode="PAY_PER_REQUEST",
             KeySchema=[{"AttributeName": "request_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a in
-                                  ("request_id", "dedup_key", "status", "rule_type", "matched_rule_id", "date_created")],
+                                  ("request_id", "dedup_key", "status", "rule_type", "matched_rule_id", "tracking",
+                                   "date_created")],
             GlobalSecondaryIndexes=[_gsi(f"{k}-date_created-index", k, "date_created")
-                                    for k in ("dedup_key", "status", "rule_type", "matched_rule_id")],
+                                    for k in ("dedup_key", "status", "rule_type", "matched_rule_id", "tracking")],
+        )
+        db.create_table(
+            TableName=TRIGGERS_TABLE, BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "trigger_id", "KeyType": "HASH"}, {"AttributeName": "rule_id", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a in
+                                  ("trigger_id", "rule_id", "rule_type", "received_at")],
+            GlobalSecondaryIndexes=[_gsi("rule_id-received_at-index", "rule_id", "received_at"),
+                                    _gsi("rule_type-received_at-index", "rule_type", "received_at")],
+        )
+        db.create_table(
+            TableName=REVISIONS_TABLE, BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "rule_id", "KeyType": "HASH"}, {"AttributeName": "revision", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "rule_id", "AttributeType": "S"},
+                                  {"AttributeName": "revision", "AttributeType": "N"}],
         )
         yield
 
@@ -166,7 +183,7 @@ def make_rule(ctx):
                 "launch_path": "auto", "shutdown_path": "auto", "schedule_enabled": False,
                 "max_concurrent_sessions": None, "cooldown_minutes": 0, "dedup_window_minutes": 60,
                 "parameters": dict(STRATEGY)}
-        return ctx.dynamo.create_rule({**rule, **overrides})
+        return ctx.dynamo.create_rule({**rule, **overrides}, "ui:tester@example.com")
     return _make
 
 

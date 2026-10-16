@@ -22,6 +22,7 @@ from launcher.rules.types import (
     ResolvedStrategyConfig,
     RuleContext,
     RuleEvaluation,
+    NoMatch,
     RuleType,
     ShutdownEvaluation,
     bad_profile_names,
@@ -73,16 +74,16 @@ class CS2Rule(RuleType):
         "required": STRATEGY_REQUIRED_PARAMS,
     }
 
-    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | None:
+    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
         venue, market = data["venue"], data["market"]
-        if market != params.get("market", DEFAULT_MARKET) or venue not in params.get("venues", VENUES):
-            return None
+        if market != params.get("market", DEFAULT_MARKET):
+            return NoMatch(f"this rule trades the {params.get('market', DEFAULT_MARKET)} market, not {market}")
+        if venue not in params.get("venues", VENUES):
+            return NoMatch(f"{venue} isn't one of this rule's venues")
         listings = _listings(data)
         missing = [lid for lid in listings if not ctx.registry.get_listing(listing_id=lid)]
         if missing:
-            logger.warning("match %s on %s: listings %s not in the registry - not launching",
-                           data["match_id"], venue, missing)
-            return None
+            return NoMatch(f"listings {missing} aren't in the registry")
 
         config = ResolvedStrategyConfig.from_params(params, listings=listings)
         config.strategy_args = {
@@ -94,13 +95,9 @@ class CS2Rule(RuleType):
         if config.mode == "paper":
             profile = {**DEFAULT_PROFILES, **params.get("simulation_profiles", {})}[venue]
             if bad_profile_names([profile]):
-                logger.error("match %s on %s: simulation profile %r must be lowercase letters and digits only",
-                             data["match_id"], venue, profile)
-                return None
+                return NoMatch(f"simulation profile {profile!r} must be lowercase letters and digits only")
             if not any(k.startswith(f"simulation.profiles.{profile}.") for k in config.simulation_config):
-                logger.error("match %s on %s: simulation profile %r isn't defined in the rule's simulation_config",
-                             data["match_id"], venue, profile)
-                return None
+                return NoMatch(f"simulation profile {profile!r} isn't defined in the rule's simulation_config")
             config.simulation_config = {
                 **config.simulation_config,
                 **{f"simulation.listing.{lid}.profile": profile for lid in listings},
@@ -121,14 +118,14 @@ class CS2Rule(RuleType):
                                     f"which simulation_config doesn't define")
         return problems
 
-    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | None:
-        strategy_id = params.get("strategy_id")
-        if not strategy_id or data["market"] != params.get("market", DEFAULT_MARKET):
-            return None
+    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | NoMatch:
+        if data["market"] != params.get("market", DEFAULT_MARKET):
+            return NoMatch(f"this rule trades the {params.get('market', DEFAULT_MARKET)} market, not {data['market']}")
+        strategy_id = params["strategy_id"]
         running = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status=ACTIVE_SESSION_STATUSES)
         listings = set(_listings(data))
         targets = [s.session_id for s in running or [] if listing_ids(s.config.get("listings", [])) & listings]
         if not targets:
-            return None
+            return NoMatch("no running session of the strategy holds these listings")
         return ShutdownEvaluation(should_shutdown=True, target_session_ids=targets,
                                   reason=f"CS2 match {data['match_id']} on {data['venue']} has started or gone")

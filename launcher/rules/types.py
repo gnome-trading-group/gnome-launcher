@@ -97,6 +97,12 @@ class RuleMatch:
 
 
 @dataclass
+class NoMatch:
+    """Why a rule didn't act on a trigger, recorded in the trigger log so "why didn't this launch?" has an answer."""
+    reason: str
+
+
+@dataclass
 class ShutdownEvaluation:
     should_shutdown: bool
     target_session_ids: list[str]
@@ -122,11 +128,11 @@ class RuleType:
     parameter_schema: dict
     data_schema: dict
 
-    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | None:
+    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
         raise NotImplementedError
 
-    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | None:
-        return None
+    def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | NoMatch:
+        return NoMatch("this rule type never shuts sessions down")
 
     def compute_schedule_time(self, data: dict, params: dict, ctx: RuleContext) -> ScheduleResult | None:
         return None

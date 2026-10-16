@@ -35,3 +35,29 @@ def api_handler(fn):
             return {"statusCode": 200, "headers": CORS_HEADERS, "body": ""}
         return fn(event, context)
     return wrapper
+
+
+def actor(event: dict) -> str:
+    """Who made an API call: the operator's email from their Cognito token."""
+    claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("claims") or {}
+    return f"ui:{claims.get('email') or claims.get('cognito:username') or 'unknown'}"
+
+
+def body_of(event: dict) -> dict | None:
+    """The request body as a JSON object, or None if it isn't one."""
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def query_int(event: dict, name: str, default: int, maximum: int) -> int | None:
+    raw = (event.get("queryStringParameters") or {}).get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 0 < value <= maximum else None

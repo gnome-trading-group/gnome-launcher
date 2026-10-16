@@ -3,14 +3,15 @@ a rule stops it launching, and must not leave the sessions it already launched r
 sessions it launched itself."""
 import json
 import logging
+import uuid
 
 from gnomepy.registry import RegistryClient
 
-from launcher import lifecycle
+from launcher import alerts, lifecycle
 from launcher.config import config
 from launcher.dynamo import DynamoClient
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
-from launcher.rules.types import RuleContext
+from launcher.rules.types import NoMatch, RuleContext
 from launcher.rules.validation import validate_data
 from launcher.slack_client import SlackClient
 
@@ -29,25 +30,35 @@ def handler(event, context):
 
 
 def process(message: dict, ctx: RuleContext) -> None:
-    rule_type, data = message["rule_type"], message["data"]
+    trigger = {**message, "action": "shutdown", "trigger_id": message.get("trigger_id") or str(uuid.uuid4())}
+    rule_type, data = trigger["rule_type"], trigger["data"]
     problems = validate_data(rule_type, data)
     if problems:
         logger.error("Dropping invalid %s shutdown trigger: %s", rule_type, "; ".join(problems))
+        ctx.dynamo.record_evaluation(trigger, "INVALID", "; ".join(problems))
+        return
+    rules = ctx.dynamo.get_rules_of_type(rule_type)
+    if not rules:
+        ctx.dynamo.record_evaluation(trigger, "NO_RULES", f"no {rule_type} rule")
         return
     rule_type_cls = RULE_TYPE_REGISTRY[rule_type]
     key = lifecycle.dedup_key(rule_type, "shutdown", data)
-    for rule in ctx.dynamo.get_rules_of_type(rule_type):
+    for rule in rules:
         if lifecycle.is_repeat(ctx.dynamo, rule, key):
+            ctx.dynamo.record_evaluation(trigger, "DUPLICATE", "already acted on this trigger inside the dedup window", rule)
             continue
         try:
             evaluation = rule_type_cls().evaluate_shutdown(data, rule["parameters"], ctx)
-        except Exception:
+        except Exception as e:
             logger.exception("Shutdown evaluation failed for rule %s", rule["rule_id"])
+            ctx.dynamo.record_evaluation(trigger, "ERROR", alerts.describe(e), rule)
             continue
-        if not evaluation or not evaluation.should_shutdown:
+        if isinstance(evaluation, NoMatch):
+            ctx.dynamo.record_evaluation(trigger, "NO_MATCH", evaluation.reason, rule)
             continue
         targets = lifecycle.launched_by(ctx, rule["rule_id"], evaluation.target_session_ids)
         if not targets:
+            ctx.dynamo.record_evaluation(trigger, "NO_MATCH", "none of the matching sessions were launched by this rule", rule)
             continue
 
         shutdown_path = (rule.get("shutdown_path") or "auto") if config.SLACK_INTERACTION_ENABLED else "auto"
@@ -56,17 +67,17 @@ def process(message: dict, ctx: RuleContext) -> None:
             matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"], launch_path=shutdown_path,
             status="STOPPING" if shutdown_path == "auto" else "PENDING_SHUTDOWN_APPROVAL",
             actor=lifecycle.AUTO_ACTOR, note=evaluation.reason, action="shutdown", target_session_ids=targets,
+            trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"),
         )
+        ctx.dynamo.record_evaluation(trigger, "REQUESTED", evaluation.reason, rule, request["request_id"])
         if shutdown_path == "auto":
             lifecycle.stop(ctx, request, rule["name"], evaluation.reason, f"launcher:{rule['name']}")
             continue
         try:
             ts = ctx.slack.send_shutdown_approval_message(
                 request_id=request["request_id"], rule_name=rule["name"], reason=evaluation.reason, session_ids=targets)
-        except Exception as e:
-            logger.exception("Couldn't post the shutdown approval for %s", request["request_id"])
-            ctx.dynamo.transition(request["request_id"], "PENDING_SHUTDOWN_APPROVAL", "STOP_FAILED", lifecycle.AUTO_ACTOR,
-                                  note=f"Couldn't post the approval request: {e}", launch_error=str(e))
+        except Exception:
+            logger.exception("Couldn't post the shutdown approval for %s to Slack", request["request_id"])
             continue
         if ts:
             ctx.dynamo.annotate(request["request_id"], slack_message_ts=ts, slack_channel=ctx.slack.channel)

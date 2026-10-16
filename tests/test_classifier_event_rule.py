@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from launcher.rules.classifier_event import ClassifierEventRule
-from launcher.rules.types import RuleContext
 
 
 def _event(category="crypto"):
@@ -66,7 +65,7 @@ def test_no_match_when_category_not_allowed():
     rule = ClassifierEventRule()
     data = {"event_ids": [1], "event_names": ["Test Event"]}
     result = rule.evaluate(data, _base_params(allowed_categories=["crypto"]), ctx)
-    assert result is None
+    assert result.reason == "Test Event: category sports isn't allowed"
 
 
 def test_no_match_when_insufficient_relationships():
@@ -74,7 +73,7 @@ def test_no_match_when_insufficient_relationships():
     rule = ClassifierEventRule()
     data = {"event_ids": [1], "event_names": ["Test Event"]}
     result = rule.evaluate(data, _base_params(min_relationships=1), ctx)
-    assert result is None
+    assert result.reason == "Test Event: 0 relationship(s), fewer than required"
 
 
 def test_no_match_when_required_type_missing():
@@ -82,7 +81,7 @@ def test_no_match_when_required_type_missing():
     rule = ClassifierEventRule()
     data = {"event_ids": [1], "event_names": ["Test Event"]}
     result = rule.evaluate(data, _base_params(required_relationship_types=["complement"]), ctx)
-    assert result is None
+    assert result.reason == "Test Event: none of the required relationship types"
 
 
 def test_match_when_required_type_present():

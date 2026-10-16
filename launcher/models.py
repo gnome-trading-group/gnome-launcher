@@ -6,6 +6,17 @@ RequestStatus = Literal[
 ]
 RuleStatus = Literal["active", "disabled", "archived"]
 
+TriggerOutcome = Literal[
+    "REQUESTED",     # the rule made a launch or shutdown request (request_id says which)
+    "DUPLICATE",     # the rule already acted on this trigger inside its dedup window
+    "RATE_LIMITED",  # the rule's concurrency cap or cooldown
+    "NO_MATCH",      # the rule looked and passed, with its reason
+    "BLOCKED",       # another session already holds the listings
+    "ERROR",         # the rule raised
+    "INVALID",       # the trigger didn't match its rule type's data_schema (trigger-level)
+    "NO_RULES",      # no rule of the type to ask (trigger-level)
+]
+
 # A request in one of these went nowhere: it holds no session and doesn't count as a repeat of its trigger.
 DEAD_END_STATUSES = ("FAILED", "REJECTED", "CANCELLED", "SHUTDOWN_REJECTED", "STOP_FAILED")
 
@@ -19,6 +30,9 @@ class RequestEvent(TypedDict):
 
 class LaunchRequest(TypedDict):
     request_id: str
+    trigger_id: str | None
+    rule_revision: int | None
+    retry_of: str | None
     action: Literal["launch", "shutdown"]
     status: RequestStatus
     rule_type: str
@@ -38,6 +52,12 @@ class LaunchRequest(TypedDict):
     schedule_name: str | None
     launch_error: str | None
     events: list[RequestEvent]
+    # Copied from the session by the sweeper while it runs; `tracking` is set until the session has ended.
+    tracking: str | None
+    session_status: str | None
+    session_started_at: str | None
+    session_stopped_at: str | None
+    session_failure_reason: str | None
     date_created: str
     date_modified: str
 
@@ -55,5 +75,8 @@ class LaunchRule(TypedDict):
     cooldown_minutes: int
     dedup_window_minutes: int
     parameters: dict
+    revision: int
+    created_by: str
+    modified_by: str
     date_created: str
     date_modified: str

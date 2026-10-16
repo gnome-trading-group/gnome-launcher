@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -82,6 +83,41 @@ export class LauncherStack extends cdk.Stack {
       sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
     });
 
+    // Sparse: only a launched request whose session hasn't ended carries `tracking`, so the sweeper reads just those.
+    requestsTable.addGlobalSecondaryIndex({
+      indexName: 'tracking-date_created-index',
+      partitionKey: { name: 'tracking', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'date_created', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Every rule's outcome for every trigger (launcher/dynamo.py record_evaluation): what answers "why didn't this
+    // launch?". Rows that made no request expire after 30 days.
+    const triggersTable = new dynamodb.Table(this, 'LaunchTriggersTable', {
+      tableName: 'gnome-launch-triggers',
+      partitionKey: { name: 'trigger_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'rule_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+    });
+    triggersTable.addGlobalSecondaryIndex({
+      indexName: 'rule_id-received_at-index',
+      partitionKey: { name: 'rule_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'received_at', type: dynamodb.AttributeType.STRING },
+    });
+    triggersTable.addGlobalSecondaryIndex({
+      indexName: 'rule_type-received_at-index',
+      partitionKey: { name: 'rule_type', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'received_at', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Every saved version of every rule, with who saved it.
+    const revisionsTable = new dynamodb.Table(this, 'LaunchRuleRevisionsTable', {
+      tableName: 'gnome-launch-rule-revisions',
+      partitionKey: { name: 'rule_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'revision', type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+    });
+
     // ── SQS Queues ────────────────────────────────────────────────────────
 
     // The launch and shutdown queues are FIFO, and every trigger's message group is its rule type
@@ -116,6 +152,23 @@ export class LauncherStack extends cdk.Stack {
       deadLetterQueue: { queue: shutdownDlq, maxReceiveCount: 3 },
     });
 
+    // The standard queues the FIFO ones replaced, kept for one more release: the monitoring stack imports their
+    // names, and CloudFormation won't delete an export in the same deploy that stops the importer using it. Once a
+    // release with the monitoring stack on the FIFO queues is out, delete these four queues and their exportValue.
+    const retiredLauncherDlq = new sqs.Queue(this, 'LauncherDlq', { retentionPeriod: cdk.Duration.days(14) });
+    const retiredLauncherQueue = new sqs.Queue(this, 'LauncherQueue', {
+      visibilityTimeout: cdk.Duration.minutes(5),
+      deadLetterQueue: { queue: retiredLauncherDlq, maxReceiveCount: 3 },
+    });
+    const retiredShutdownDlq = new sqs.Queue(this, 'ShutdownDlq', { retentionPeriod: cdk.Duration.days(14) });
+    const retiredShutdownQueue = new sqs.Queue(this, 'ShutdownQueue', {
+      visibilityTimeout: cdk.Duration.minutes(5),
+      deadLetterQueue: { queue: retiredShutdownDlq, maxReceiveCount: 3 },
+    });
+    for (const retired of [retiredLauncherDlq, retiredLauncherQueue, retiredShutdownDlq, retiredShutdownQueue]) {
+      this.exportValue(retired.queueName);
+    }
+
     this.queues = [
       { name: 'Launcher', queue: launcherQueue, dlq: launcherDlq },
       { name: 'ClassifierAdapter', queue: classifierAdapterQueue, dlq: classifierAdapterDlq },
@@ -149,6 +202,8 @@ export class LauncherStack extends cdk.Stack {
       STAGE: props.stage,
       LAUNCH_REQUESTS_TABLE: requestsTable.tableName,
       LAUNCH_RULES_TABLE: rulesTable.tableName,
+      LAUNCH_TRIGGERS_TABLE: triggersTable.tableName,
+      LAUNCH_RULE_REVISIONS_TABLE: revisionsTable.tableName,
       REGISTRY_API_URL: cdk.Fn.importValue('RegistryApiUrl'),
       REGISTRY_API_KEY_ID: registryApiKeyId,
       SLACK_BOT_TOKEN_SECRET: 'slack-bot-token',
@@ -168,6 +223,8 @@ export class LauncherStack extends cdk.Stack {
       const fn = new lambda.DockerImageFunction(this, id, {
         code: lambda.DockerImageCode.fromImageAsset(imageAsset, {
           cmd: [handler],
+          // The functions run on x86_64; pinned so an image built on an arm64 machine still runs.
+          platform: Platform.LINUX_AMD64,
         }),
         timeout,
         memorySize,
@@ -207,6 +264,8 @@ export class LauncherStack extends cdk.Stack {
       {},
       (fn) => {
         requestsTable.grantReadWriteData(fn);
+        // It checks the rule is still active before launching.
+        rulesTable.grantReadData(fn);
         slackBotTokenSecret.grantRead(fn);
         fn.addToRolePolicy(new iam.PolicyStatement({
           actions: ['apigateway:GET'],
@@ -233,6 +292,7 @@ export class LauncherStack extends cdk.Stack {
       (fn) => {
         requestsTable.grantReadWriteData(fn);
         rulesTable.grantReadData(fn);
+        triggersTable.grantWriteData(fn);
         slackBotTokenSecret.grantRead(fn);
         fn.addToRolePolicy(new iam.PolicyStatement({
           actions: ['apigateway:GET'],
@@ -267,6 +327,7 @@ export class LauncherStack extends cdk.Stack {
       (fn) => {
         requestsTable.grantReadWriteData(fn);
         rulesTable.grantReadData(fn);
+        triggersTable.grantWriteData(fn);
         slackBotTokenSecret.grantRead(fn);
         fn.addToRolePolicy(new iam.PolicyStatement({
           actions: ['apigateway:GET'],
@@ -324,6 +385,7 @@ export class LauncherStack extends cdk.Stack {
       (fn) => {
         launcherQueue.grantSendMessages(fn);
         shutdownQueue.grantSendMessages(fn);
+        triggersTable.grantReadData(fn);
       },
     );
 
@@ -332,11 +394,20 @@ export class LauncherStack extends cdk.Stack {
     const launchRequestsFn = createLambda(
       'LaunchRequests',
       'launcher.handlers.api.launch_requests.handler',
-      cdk.Duration.seconds(10),
-      256,
+      cdk.Duration.seconds(30),
+      512,
       {},
       (fn) => {
-        requestsTable.grantReadData(fn);
+        // Approve, reject, cancel and retry write requests; retry reads the rule; cancel deletes the schedule;
+        // both settle the request's Slack message. Invoking the approve Lambdas is granted below, once they exist.
+        requestsTable.grantReadWriteData(fn);
+        rulesTable.grantReadData(fn);
+        triggersTable.grantReadData(fn);
+        slackBotTokenSecret.grantRead(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['scheduler:DeleteSchedule'],
+          resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/launcher-*`],
+        }));
       },
     );
 
@@ -345,11 +416,19 @@ export class LauncherStack extends cdk.Stack {
     const launchRulesFn = createLambda(
       'LaunchRules',
       'launcher.handlers.api.launch_rules.handler',
-      cdk.Duration.seconds(10),
-      256,
+      cdk.Duration.seconds(30),
+      512,
       {},
       (fn) => {
         rulesTable.grantReadWriteData(fn);
+        revisionsTable.grantReadWriteData(fn);
+        // Stats and dry runs read the rule's requests, its trigger log, and the registry's sessions and listings.
+        requestsTable.grantReadData(fn);
+        triggersTable.grantReadData(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
       },
     );
 
@@ -414,6 +493,36 @@ export class LauncherStack extends cdk.Stack {
       },
     );
 
+    launchRequestsFn.addEnvironment('APPROVE_LAUNCH_FUNCTION_NAME', this.approveLaunchFn.functionName);
+    launchRequestsFn.addEnvironment('APPROVE_SHUTDOWN_FUNCTION_NAME', this.approveShutdownFn.functionName);
+    this.approveLaunchFn.grantInvoke(launchRequestsFn);
+    this.approveShutdownFn.grantInvoke(launchRequestsFn);
+
+    // ── Sweeper Lambda ────────────────────────────────────────────────────
+
+    // Keeps launched requests in step with their sessions, and resolves requests stuck between steps
+    // (launcher/handlers/sweeper.py).
+    const sweeperFn = createLambda(
+      'Sweeper',
+      'launcher.handlers.sweeper.handler',
+      cdk.Duration.minutes(2),
+      512,
+      {},
+      (fn) => {
+        requestsTable.grantReadWriteData(fn);
+        slackBotTokenSecret.grantRead(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
+      },
+    );
+    new events.Rule(this, 'SweeperSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(sweeperFn, { retryAttempts: 0 })],
+    });
+    this.processors.push({ name: 'Sweeper', fn: sweeperFn });
+
     // ── API Gateway ───────────────────────────────────────────────────────
 
     this.api = new apigateway.RestApi(this, 'LauncherApi', {
@@ -452,11 +561,14 @@ export class LauncherStack extends cdk.Stack {
 
     const triggers = this.api.root.addResource('triggers');
     triggers.addMethod('POST', lambdaIntegration(apiTriggerFn), methodOptions);
+    triggers.addMethod('GET', lambdaIntegration(apiTriggerFn), methodOptions);
 
     const launchRequests = this.api.root.addResource('launch-requests');
     launchRequests.addMethod('GET', lambdaIntegration(launchRequestsFn), methodOptions);
     const launchRequestById = launchRequests.addResource('{id}');
     launchRequestById.addMethod('GET', lambdaIntegration(launchRequestsFn), methodOptions);
+    // approve | reject | cancel | retry
+    launchRequestById.addResource('{action}').addMethod('POST', lambdaIntegration(launchRequestsFn), methodOptions);
 
     const launchRules = this.api.root.addResource('launch-rules');
     launchRules.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
@@ -465,6 +577,11 @@ export class LauncherStack extends cdk.Stack {
     launchRuleById.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
     launchRuleById.addMethod('PATCH', lambdaIntegration(launchRulesFn), methodOptions);
     launchRuleById.addMethod('DELETE', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRules.addResource('validate').addMethod('POST', lambdaIntegration(launchRulesFn), methodOptions);
+    // revisions | activity | stats (GET) and dry-run (POST)
+    const launchRuleView = launchRuleById.addResource('{view}');
+    launchRuleView.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRuleView.addMethod('POST', lambdaIntegration(launchRulesFn), methodOptions);
 
     const ruleTypes = this.api.root.addResource('rule-types');
     ruleTypes.addMethod('GET', lambdaIntegration(ruleTypesFn), methodOptions);

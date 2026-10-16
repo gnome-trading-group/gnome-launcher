@@ -15,7 +15,8 @@ def handler(event, context):
     """Carries out a shutdown approval the Slack interaction already recorded (the request is SHUTDOWN_APPROVED)."""
     request_id = event["request_id"]
     username = event.get("username", "unknown")
-    actor = f"slack:{username}"
+    # Approvals come from Slack or from the controller, which passes its operator as the actor.
+    actor = event.get("actor") or f"slack:{username}"
     ctx = RuleContext(registry=RegistryClient(), dynamo=DynamoClient(), slack=SlackClient())
 
     request = ctx.dynamo.transition(request_id, "SHUTDOWN_APPROVED", "STOPPING", actor)

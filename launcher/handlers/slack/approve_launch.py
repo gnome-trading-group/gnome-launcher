@@ -17,7 +17,8 @@ def handler(event, context):
     has a time still to come, otherwise launches it."""
     request_id = event["request_id"]
     username = event.get("username", "unknown")
-    actor = f"slack:{username}"
+    # Approvals come from Slack or from the controller, which passes its operator as the actor.
+    actor = event.get("actor") or f"slack:{username}"
     ctx = RuleContext(registry=RegistryClient(), dynamo=DynamoClient(), slack=SlackClient())
 
     request = ctx.dynamo.get_request(request_id)
@@ -26,26 +27,26 @@ def handler(event, context):
         return
     when = lifecycle.scheduled_time(request)
     if not lifecycle.is_due(when):
-        _schedule(request, when, username, ctx)
+        _schedule(request, when, actor, username, ctx)
     else:
         _launch(request, actor, username, ctx)
 
 
-def _schedule(request: LaunchRequest, when, username: str, ctx: RuleContext):
+def _schedule(request: LaunchRequest, when, actor: str, username: str, ctx: RuleContext):
     request_id = request["request_id"]
     try:
         name = lifecycle.create_schedule(request_id, when)
     except Exception as e:
         logger.exception("Failed to create schedule for request %s", request_id)
         lifecycle.fail(ctx, request, "APPROVED", request["matched_rule_name"], f"Couldn't create the schedule: {e}",
-                       f"slack:{username}")
+                       actor)
         ctx.slack.update_message(
             message_ts=request["slack_message_ts"],
             text=f"Strategy launch approved by @{username} — scheduling failed",
             blocks=_build_failed_blocks(request, username, str(e)),
         )
         return
-    if ctx.dynamo.transition(request_id, "APPROVED", "SCHEDULED", f"slack:{username}", schedule_name=name) is None:
+    if ctx.dynamo.transition(request_id, "APPROVED", "SCHEDULED", actor, schedule_name=name) is None:
         lifecycle.delete_schedule(name)
         return
     time_str = when.strftime("%Y-%m-%d %H:%M UTC")

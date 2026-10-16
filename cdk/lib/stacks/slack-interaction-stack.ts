@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as secrets from 'aws-cdk-lib/aws-secretsmanager';
@@ -38,6 +39,8 @@ export class LauncherSlackInteractionStack extends cdk.Stack {
     const slackInteractionFn = this.interactionFn = new lambda.DockerImageFunction(this, 'SlackInteraction', {
       code: lambda.DockerImageCode.fromImageAsset(imageAsset, {
         cmd: ['launcher.handlers.slack.interaction.handler'],
+        // The function runs on x86_64; pinned so an image built on an arm64 machine still runs.
+        platform: Platform.LINUX_AMD64,
       }),
       timeout: cdk.Duration.seconds(10),
       memorySize: 256,

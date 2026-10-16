@@ -29,7 +29,7 @@ class DirectLaunchRule(RuleType):
         },
     }
 
-    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | None:
+    def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation:
         return RuleEvaluation(
             should_launch=True,
             resolved_config=ResolvedStrategyConfig(

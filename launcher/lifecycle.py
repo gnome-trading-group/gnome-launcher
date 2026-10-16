@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import boto3
 
 from launcher import alerts
-from launcher.dynamo import DynamoClient
+from launcher.dynamo import TRACKING_OPEN, DynamoClient
 from launcher.models import DEAD_END_STATUSES, LaunchRequest, LaunchRule
 from launcher.rules.types import ResolvedStrategyConfig, RuleContext
 from launcher.sessions import ACTIVE_SESSION_STATUSES, RULE_ID_KEY, create_session, find_session, listing_ids
@@ -89,7 +89,8 @@ def launch(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str
             return failed
         logger.warning("Launching %s raised, but the registry has its session %s (%s); treating it as launched",
                        request_id, session_id, session.status, exc_info=True)
-    launched = ctx.dynamo.transition(request_id, "LAUNCHING", "LAUNCHED", actor, note=f"session {session_id}")
+    launched = ctx.dynamo.transition(request_id, "LAUNCHING", "LAUNCHED", actor, note=f"session {session_id}",
+                                     tracking=TRACKING_OPEN, session_status="SUBMITTED")
     alerts.launched(ctx.registry, rule_name, reason, config, session_id)
     return launched
 

@@ -236,15 +236,14 @@ def test_an_approval_the_async_launcher_receives_twice_launches_once(ctx, make_r
     assert len(ctx.registry.sessions) == 1
 
 
-def test_an_approval_request_slack_couldnt_post_fails_so_the_next_trigger_asks_again(ctx, make_rule):
+def test_an_approval_slack_couldnt_post_still_waits_for_the_controller(ctx, make_rule):
     rule = make_rule(launch_path="approval")
     ctx.slack.fail = True
-    trigger(ctx, [1])
-    ctx.slack.fail = False
 
     trigger(ctx, [1])
 
-    assert [r["status"] for r in requests_of(ctx, rule)] == ["FAILED", "PENDING_APPROVAL"]
+    [request] = requests_of(ctx, rule)
+    assert request["status"] == "PENDING_APPROVAL" and request["slack_message_ts"] is None
 
 
 # ---- schedules -----------------------------------------------------------------------------------------------------
@@ -268,7 +267,7 @@ def test_a_scheduled_launch_fires_once(ctx, make_rule):
 def test_a_schedule_for_a_rule_disabled_since_is_cancelled_when_it_fires(ctx, make_rule):
     rule = make_rule(schedule_enabled=True)
     trigger(ctx, [1], launch_at=in_minutes(30))
-    ctx.dynamo.replace_rule({**ctx.dynamo.get_rule(rule["rule_id"]), "status": "disabled"})
+    ctx.dynamo.replace_rule({**ctx.dynamo.get_rule(rule["rule_id"]), "status": "disabled"}, "ui:tester", ["status"])
     [request] = requests_of(ctx, rule)
 
     scheduled_launch.fire(request["request_id"], ctx)
@@ -320,7 +319,7 @@ def test_a_shutdown_stops_only_the_sessions_its_rule_launched(ctx, make_rule):
 def test_a_disabled_rule_still_stops_its_sessions(ctx, make_rule):
     rule = make_rule()
     trigger(ctx, [1])
-    ctx.dynamo.replace_rule({**ctx.dynamo.get_rule(rule["rule_id"]), "status": "disabled"})
+    ctx.dynamo.replace_rule({**ctx.dynamo.get_rule(rule["rule_id"]), "status": "disabled"}, "ui:tester", ["status"])
 
     shutdown_processor.process({"rule_type": "probe", "data": {"listings": [1]}}, ctx)
 
