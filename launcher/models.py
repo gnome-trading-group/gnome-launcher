@@ -19,6 +19,9 @@ TriggerOutcome = Literal[
 
 # A request in one of these went nowhere: it holds no session and doesn't count as a repeat of its trigger.
 DEAD_END_STATUSES = ("FAILED", "REJECTED", "CANCELLED", "SHUTDOWN_REJECTED", "STOP_FAILED")
+# A request in one of these is still on its way to a session (or to stopping one), however long it has waited.
+OPEN_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SCHEDULED", "LAUNCHING",
+                 "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", "STOPPING")
 
 
 class RequestEvent(TypedDict):

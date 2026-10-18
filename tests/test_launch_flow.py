@@ -58,6 +58,34 @@ def test_each_rule_dedups_in_its_own_window(ctx, make_rule):
     assert len(requests_of(ctx, rule)) == 2
 
 
+def age(ctx, request, minutes):
+    ctx.dynamo._requests.update_item(Key={"request_id": request["request_id"]},
+                                     UpdateExpression="SET date_created = :t",
+                                     ExpressionAttributeValues={":t": in_minutes(-minutes)})
+
+
+@pytest.mark.parametrize("window", [60, 0])
+def test_a_request_awaiting_approval_past_the_window_still_counts_as_the_repeat(ctx, make_rule, window):
+    rule = make_rule(launch_path="approval", dedup_window_minutes=window)
+    trigger(ctx, [1, 2])
+    age(ctx, requests_of(ctx, rule)[0], 6 * 60)
+
+    trigger(ctx, [1, 2])
+
+    assert [r["status"] for r in requests_of(ctx, rule)] == ["PENDING_APPROVAL"]
+
+
+def test_a_launched_request_past_the_window_no_longer_counts_as_the_repeat(ctx, make_rule):
+    rule = make_rule()
+    trigger(ctx, [1, 2])
+    age(ctx, requests_of(ctx, rule)[0], 61)
+    ctx.registry.sessions.clear()
+
+    trigger(ctx, [1, 2])
+
+    assert [r["status"] for r in requests_of(ctx, rule)] == ["LAUNCHED", "LAUNCHED"]
+
+
 def test_a_failed_launch_is_retried_by_the_next_trigger_under_one_alert(ctx, make_rule):
     rule = make_rule()
 

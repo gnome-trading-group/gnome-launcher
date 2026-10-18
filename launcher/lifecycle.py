@@ -12,13 +12,13 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
 
 from launcher import alerts
 from launcher.dynamo import TRACKING_OPEN, DynamoClient
-from launcher.models import DEAD_END_STATUSES, LaunchRequest, LaunchRule
+from launcher.models import DEAD_END_STATUSES, OPEN_STATUSES, LaunchRequest, LaunchRule
 from launcher.rules.types import ResolvedStrategyConfig, RuleContext
 from launcher.sessions import ACTIVE_SESSION_STATUSES, RULE_ID_KEY, create_session, find_session, listing_ids
 
@@ -36,14 +36,17 @@ def dedup_key(rule_type: str, action: str, data: dict) -> str:
 
 
 def is_repeat(dynamo: DynamoClient, rule: LaunchRule, key: str) -> bool:
-    """Whether this rule already acted on this trigger inside its own dedup window. A request that went nowhere
-    (failed, rejected, cancelled) doesn't count, so the next identical trigger retries it."""
+    """Whether this rule already acted on this trigger: it has a request for it still open (awaiting approval, say),
+    however old, or one inside its own dedup window. A request that went nowhere (failed, rejected, cancelled)
+    doesn't count, so the next identical trigger retries it."""
     window = rule.get("dedup_window_minutes")
     window = DEFAULT_DEDUP_WINDOW_MINUTES if window is None else window
-    if window == 0:
-        return False
-    return any(r["matched_rule_id"] == rule["rule_id"] and r["status"] not in DEAD_END_STATUSES
-               for r in dynamo.requests_with_dedup_key_since(key, window))
+    since = (datetime.now(timezone.utc) - timedelta(minutes=window)).isoformat()
+    # A window of 0 turns off the window, not the open check: a second request for a launch still awaiting
+    # approval would only be a second approval message for the same session.
+    return any(r["status"] in OPEN_STATUSES
+               or (window and r["status"] not in DEAD_END_STATUSES and r["date_created"] >= since)
+               for r in dynamo.requests_with_dedup_key(key) if r["matched_rule_id"] == rule["rule_id"])
 
 
 # The registry refuses a session whose listings overlap another session of the same strategy and mode that still

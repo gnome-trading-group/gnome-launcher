@@ -255,11 +255,10 @@ class DynamoClient:
             self._requests, IndexName="matched_rule_id-date_created-index", ScanIndexForward=False,
             KeyConditionExpression=Key("matched_rule_id").eq(rule_id) & Key("date_created").gte(since.isoformat()))]
 
-    def requests_with_dedup_key_since(self, dedup_key: str, minutes: int) -> list[LaunchRequest]:
-        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    def requests_with_dedup_key(self, dedup_key: str) -> list[LaunchRequest]:
         return [_decode(i, REQUEST_JSON_FIELDS) for i in _query_all(
             self._requests, IndexName="dedup_key-date_created-index",
-            KeyConditionExpression=Key("dedup_key").eq(dedup_key) & Key("date_created").gte(since))]
+            KeyConditionExpression=Key("dedup_key").eq(dedup_key))]
 
     # ── Trigger log ───────────────────────────────────────────────────────
 
