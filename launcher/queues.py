@@ -6,7 +6,10 @@ import uuid
 from datetime import datetime, timezone
 
 
-def send_trigger(sqs, queue_url: str, rule_type: str, action: str, data: dict, timestamp: str | None = None) -> str:
+def send_trigger(sqs, queue_url: str, rule_type: str, action: str, data: dict, timestamp: str | None = None,
+                 deadline: str | None = None) -> str:
+    """`deadline` (an ISO time) is when a launch stops being worth making. It travels beside `data`, not in it: data
+    is what identifies a trigger for dedup, and a moved deadline (a delayed kickoff) is still the same trigger."""
     trigger_id = str(uuid.uuid4())
     sqs.send_message(
         QueueUrl=queue_url,
@@ -16,6 +19,7 @@ def send_trigger(sqs, queue_url: str, rule_type: str, action: str, data: dict, t
             "action": action,
             "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
             "data": data,
+            "deadline": deadline,
         }),
         MessageGroupId=rule_type,
         # The launcher dedups triggers itself, per rule and window; SQS's own five-minute dedup is switched off.

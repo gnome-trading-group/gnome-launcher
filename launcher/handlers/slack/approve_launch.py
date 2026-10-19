@@ -26,7 +26,10 @@ def handler(event, context):
         logger.error("Request not found: %s", request_id)
         return
     when = lifecycle.scheduled_time(request)
-    if not lifecycle.is_due(when):
+    expires_at = lifecycle.deadline(request.get("expires_at"))
+    if when is not None and expires_at is not None and when >= expires_at:
+        lifecycle.expire(ctx.dynamo, ctx.slack, request, "APPROVED", actor)
+    elif not lifecycle.is_due(when):
         _schedule(request, when, actor, username, ctx)
     else:
         _launch(request, actor, username, ctx)
@@ -65,6 +68,10 @@ def _launch(request: LaunchRequest, actor: str, username: str, ctx: RuleContext)
     request_id = request["request_id"]
     launching = ctx.dynamo.transition(request_id, "APPROVED", "LAUNCHING", actor)
     if launching is None:
+        return
+    # Checked again here, not just at the click: an approval made just before the deadline lands just after it.
+    if lifecycle.is_expired(launching.get("expires_at")):
+        lifecycle.expire(ctx.dynamo, ctx.slack, launching, "LAUNCHING", actor)
         return
     blocker = lifecycle.blocking_session(ResolvedStrategyConfig(**request["resolved_config"]), ctx)
     if blocker:

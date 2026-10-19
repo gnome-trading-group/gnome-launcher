@@ -81,18 +81,21 @@ def test_scanner_launches_fresh_upcoming_legs_inside_the_lead_and_skips_the_rest
 
     found = triggers(rows, NOW)
 
-    assert [(a, d["match_id"], d["venue"]) for a, d in found] == [("launch", 1, "kalshi"), ("launch", 1, "polymarket")]
+    assert [(a, d["match_id"], d["venue"]) for a, d, _ in found] == [("launch", 1, "kalshi"), ("launch", 1, "polymarket")]
     assert found[0][1] == {"match_id": 1, "venue": "kalshi", "market": "series", "listing_team_a": 11, "listing_team_b": 12}
+    assert found[0][2] == "2026-10-16T08:00:00+00:00"
 
 
-def test_scanner_shuts_down_live_missing_and_long_started_matches():
+def test_scanner_shuts_down_missing_and_long_started_matches_but_leaves_live_ones():
     rows = pd.DataFrame([
-        _row(1, "2026-10-16T01:00Z", status="live"),
-        _row(2, "2026-10-15T20:00Z", status="missing"),
-        _row(3, "2026-10-15T23:00Z", generated_at="2026-10-15T12:00Z"),
+        _row(1, "2026-10-15T20:00Z", status="missing"),
+        _row(2, "2026-10-15T14:00Z", generated_at="2026-10-15T12:00Z"),
+        _row(3, "2026-10-15T22:00Z", status="live"),
+        _row(4, "2026-10-15T23:00Z"),
     ])
 
-    assert [(a, d["match_id"]) for a, d in triggers(rows, NOW)] == [("shutdown", 1), ("shutdown", 2), ("shutdown", 3)]
+    assert [(a, d["match_id"], deadline) for a, d, deadline in triggers(rows, NOW)] == [
+        ("shutdown", 1, None), ("shutdown", 2, None)]
 
 
 def test_scanner_reads_each_matchs_newest_row():

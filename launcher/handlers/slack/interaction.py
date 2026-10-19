@@ -160,6 +160,12 @@ def _handle_launch_reject(request: LaunchRequest, user_id: str, username: str, d
 
 
 def _handle_launch_approve(request: LaunchRequest, user_id: str, username: str, dynamo: DynamoClient, slack: SlackClient):
+    if lifecycle.is_expired(request.get("expires_at")):
+        if lifecycle.expire(dynamo, slack, request, "PENDING_APPROVAL", f"slack:{username}") is None:
+            return _already_handled(request, username, slack)
+        slack.post_thread_reply(thread_ts=request["slack_message_ts"],
+                                text=f"@{username}: too late to launch, {lifecycle.expiry_note(request)}")
+        return
     if dynamo.transition(request["request_id"], "PENDING_APPROVAL", "APPROVED", f"slack:{username}",
                          approved_by=user_id) is None:
         return _already_handled(request, username, slack)

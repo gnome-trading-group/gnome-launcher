@@ -14,9 +14,9 @@ from launcher.dynamo import DynamoClient
 from launcher.models import LaunchRequest, LaunchRule
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
 from launcher.rules.engine import RateLimited, evaluate_rule
-from launcher.rules.types import NoMatch, RuleContext, RuleEvaluation
-from launcher.rules.validation import validate_data
-from launcher.slack_client import SlackClient
+from launcher.rules.types import NoMatch, RuleContext, RuleEvaluation, ScheduleResult
+from launcher.rules.validation import validate_data, validate_deadline
+from launcher.slack_client import SlackClient, format_time
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def handler(event, context):
 def process(message: dict, ctx: RuleContext) -> None:
     trigger = {**message, "action": "launch", "trigger_id": message.get("trigger_id") or str(uuid.uuid4())}
     rule_type, data = trigger["rule_type"], trigger["data"]
-    problems = validate_data(rule_type, data)
+    problems = validate_data(rule_type, data) + validate_deadline(trigger.get("deadline"))
     if problems:
         # Retrying can't fix a malformed trigger, so it is recorded and dropped rather than sent to the DLQ.
         logger.error("Dropping invalid %s trigger: %s", rule_type, "; ".join(problems))
@@ -46,9 +46,20 @@ def process(message: dict, ctx: RuleContext) -> None:
         ctx.dynamo.record_evaluation(trigger, "NO_RULES", f"no active {rule_type} rule")
         return
     key = lifecycle.dedup_key(rule_type, "launch", data)
+    expires_at = lifecycle.deadline(trigger.get("deadline"))
+    expires_at = expires_at.isoformat() if expires_at else None
+    label = lifecycle.deadline_label(rule_type)
     for rule in rules:
-        if lifecycle.is_repeat(ctx.dynamo, rule, key):
-            ctx.dynamo.record_evaluation(trigger, "DUPLICATE", "already acted on this trigger inside the dedup window", rule)
+        repeat = lifecycle.repeat_of(ctx.dynamo, rule, key)
+        if repeat:
+            reason = "already acted on this trigger inside the dedup window"
+            if lifecycle.move_expiry(ctx, repeat, expires_at):
+                reason += f"; moved its expiry to the new {label}"
+            ctx.dynamo.record_evaluation(trigger, "DUPLICATE", reason, rule)
+            continue
+        if lifecycle.is_expired(expires_at):
+            ctx.dynamo.record_evaluation(trigger, "EXPIRED", f"{label} was {format_time(lifecycle.deadline(expires_at))}",
+                                         rule)
             continue
         try:
             result = evaluate_rule(rule, data, ctx)
@@ -64,18 +75,27 @@ def process(message: dict, ctx: RuleContext) -> None:
         if blocker:
             ctx.dynamo.record_evaluation(trigger, "BLOCKED", f"session {blocker} already holds these listings", rule)
             continue
-        request = _start(rule, result, trigger, key, ctx)
+        schedule = _schedule_time(rule, data, ctx)
+        if schedule and expires_at and schedule.scheduled_time >= lifecycle.deadline(expires_at):
+            ctx.dynamo.record_evaluation(
+                trigger, "EXPIRED", f"it would launch at {format_time(schedule.scheduled_time)}, after its {label} "
+                                    f"at {format_time(lifecycle.deadline(expires_at))}", rule)
+            continue
+        request = _start(rule, result, trigger, key, schedule, expires_at, ctx)
         ctx.dynamo.record_evaluation(trigger, "REQUESTED", result.reason, rule, request["request_id"])
 
 
-def _start(rule: LaunchRule, evaluation: RuleEvaluation, trigger: dict, key: str, ctx: RuleContext) -> LaunchRequest:
+def _schedule_time(rule: LaunchRule, data: dict, ctx: RuleContext) -> ScheduleResult | None:
+    if not rule.get("schedule_enabled"):
+        return None
+    schedule = RULE_TYPE_REGISTRY[rule["rule_type"]]().compute_schedule_time(data, rule["parameters"], ctx)
+    return None if schedule is None or lifecycle.is_due(schedule.scheduled_time) else schedule
+
+
+def _start(rule: LaunchRule, evaluation: RuleEvaluation, trigger: dict, key: str, schedule: ScheduleResult | None,
+           expires_at: str | None, ctx: RuleContext) -> LaunchRequest:
     data = trigger["data"]
     launch_path = rule["launch_path"]
-    schedule = None
-    if rule.get("schedule_enabled"):
-        schedule = RULE_TYPE_REGISTRY[rule["rule_type"]]().compute_schedule_time(data, rule["parameters"], ctx)
-    if schedule and lifecycle.is_due(schedule.scheduled_time):
-        schedule = None
 
     if launch_path == "approval":
         status = "PENDING_APPROVAL"
@@ -89,7 +109,7 @@ def _start(rule: LaunchRule, evaluation: RuleEvaluation, trigger: dict, key: str
         matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"], launch_path=launch_path,
         status=status, actor=lifecycle.AUTO_ACTOR, note=evaluation.reason,
         scheduled_time=schedule.scheduled_time.isoformat() if schedule else None,
-        trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"), links=links,
+        trigger_id=trigger["trigger_id"], rule_revision=rule.get("revision"), links=links, expires_at=expires_at,
     )
 
     if status == "LAUNCHING":
@@ -97,7 +117,7 @@ def _start(rule: LaunchRule, evaluation: RuleEvaluation, trigger: dict, key: str
     elif status == "SCHEDULED":
         _schedule(request, rule, evaluation, schedule, ctx)
     else:
-        _request_approval(request, rule, evaluation, schedule, ctx)
+        _request_approval(request, rule, evaluation, schedule, expires_at, ctx)
     return request
 
 
@@ -118,13 +138,15 @@ def _schedule(request, rule: LaunchRule, evaluation: RuleEvaluation, schedule, c
         ctx.dynamo.annotate(request["request_id"], slack_message_ts=ts, slack_channel=ctx.slack.channel)
 
 
-def _request_approval(request, rule: LaunchRule, evaluation: RuleEvaluation, schedule, ctx: RuleContext) -> None:
+def _request_approval(request, rule: LaunchRule, evaluation: RuleEvaluation, schedule, expires_at: str | None,
+                      ctx: RuleContext) -> None:
     try:
         ts = ctx.slack.send_approval_message(
             request_id=request["request_id"], rule_name=rule["name"], rule_id=rule["rule_id"], reason=evaluation.reason,
             config=evaluation.resolved_config, links=request["links"],
             scheduled_time=schedule.scheduled_time if schedule else None,
             schedule_reason=schedule.reason if schedule else None,
+            expires_at=lifecycle.deadline(expires_at), deadline_label=lifecycle.deadline_label(rule["rule_type"]),
         )
     except Exception:
         # The controller can still approve it; Slack is one of two places to do that.

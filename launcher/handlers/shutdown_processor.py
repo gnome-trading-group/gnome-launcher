@@ -44,7 +44,7 @@ def process(message: dict, ctx: RuleContext) -> None:
     rule_type_cls = RULE_TYPE_REGISTRY[rule_type]
     key = lifecycle.dedup_key(rule_type, "shutdown", data)
     for rule in rules:
-        if lifecycle.is_repeat(ctx.dynamo, rule, key):
+        if lifecycle.repeat_of(ctx.dynamo, rule, key):
             ctx.dynamo.record_evaluation(trigger, "DUPLICATE", "already acted on this trigger inside the dedup window", rule)
             continue
         try:

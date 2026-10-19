@@ -1,5 +1,6 @@
 """An EventBridge schedule firing for a SCHEDULED request. Hours can pass between scheduling and firing, so the
-rule and the listings are checked again: a rule disabled since then cancels the launch rather than running it."""
+rule, the listings and the deadline are checked again: a rule disabled since then cancels the launch, and one past its
+deadline expires, rather than running it."""
 import logging
 
 from gnomepy.registry import RegistryClient
@@ -23,6 +24,9 @@ def fire(request_id: str, ctx: RuleContext) -> None:
     request = ctx.dynamo.transition(request_id, "SCHEDULED", "LAUNCHING", ACTOR)
     if request is None:
         logger.info("Request %s is no longer SCHEDULED; not launching", request_id)
+        return
+    if lifecycle.is_expired(request.get("expires_at")):
+        lifecycle.expire(ctx.dynamo, ctx.slack, request, "LAUNCHING", ACTOR)
         return
     rule_name = request["matched_rule_name"]
     rule = ctx.dynamo.get_rule(request["matched_rule_id"])

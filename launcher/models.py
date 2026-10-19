@@ -3,6 +3,7 @@ from typing import Literal, TypedDict
 RequestStatus = Literal[
     "PENDING_APPROVAL", "APPROVED", "REJECTED", "SCHEDULED", "CANCELLED", "LAUNCHING", "LAUNCHED", "FAILED",
     "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", "SHUTDOWN_REJECTED", "STOPPING", "STOPPED", "STOP_FAILED",
+    "EXPIRED",
 ]
 RuleStatus = Literal["active", "disabled", "archived"]
 
@@ -15,10 +16,11 @@ TriggerOutcome = Literal[
     "ERROR",         # the rule raised
     "INVALID",       # the trigger didn't match its rule type's data_schema (trigger-level)
     "NO_RULES",      # no rule of the type to ask (trigger-level)
+    "EXPIRED",       # the trigger's deadline had passed, so there was nothing left to launch for
 ]
 
 # A request in one of these went nowhere: it holds no session and doesn't count as a repeat of its trigger.
-DEAD_END_STATUSES = ("FAILED", "REJECTED", "CANCELLED", "SHUTDOWN_REJECTED", "STOP_FAILED")
+DEAD_END_STATUSES = ("FAILED", "REJECTED", "CANCELLED", "SHUTDOWN_REJECTED", "STOP_FAILED", "EXPIRED")
 # A request in one of these is still on its way to a session (or to stopping one), however long it has waited.
 OPEN_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SCHEDULED", "LAUNCHING",
                  "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", "STOPPING")
@@ -53,6 +55,8 @@ class LaunchRequest(TypedDict):
     target_session_ids: list | None
     scheduled_time: str | None
     schedule_name: str | None
+    # The trigger's deadline (a CS2 match's kickoff): past it the request can't launch. None never expires.
+    expires_at: str | None
     launch_error: str | None
     # See launcher.links; None on requests made before links were stored.
     links: dict | None

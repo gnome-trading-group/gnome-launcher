@@ -5,7 +5,6 @@ import pytest
 
 from launcher.handlers import shutdown_processor, sweeper, trigger_processor
 from launcher.handlers.api import api_trigger, launch_requests, launch_rules
-from launcher.handlers.slack import approve_launch
 from tests.conftest import STRATEGY, in_minutes
 
 
@@ -136,22 +135,6 @@ def test_an_approval_nobody_acted_on_expires(ctx, make_rule):
 
 
 # ---- requests API --------------------------------------------------------------------------------------------------
-
-@pytest.fixture
-def invoked(ctx, monkeypatch):
-    calls = []
-    monkeypatch.setattr(launch_requests, "_invoke", lambda function, request_id, who: calls.append((request_id, who)))
-    monkeypatch.setattr(launch_requests, "SlackClient", lambda: ctx.slack)
-    monkeypatch.setattr(approve_launch, "RegistryClient", lambda: ctx.registry)
-    monkeypatch.setattr(approve_launch, "SlackClient", lambda: ctx.slack)
-
-    def run():
-        for request_id, who in calls:
-            approve_launch.handler({"request_id": request_id, "username": who, "actor": who}, None)
-        calls.clear()
-    run.calls = calls
-    return run
-
 
 def test_approving_in_the_controller_launches_once_even_if_slack_also_clicks(ctx, make_rule, invoked):
     make_rule(launch_path="approval")

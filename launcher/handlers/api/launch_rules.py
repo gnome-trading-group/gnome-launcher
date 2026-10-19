@@ -161,7 +161,7 @@ def _dry_run(rule: dict, body: dict | None, dynamo: DynamoClient):
                    "target_session_ids": targets})
 
     key = lifecycle.dedup_key(rule["rule_type"], "launch", data)
-    notes = {"duplicate": lifecycle.is_repeat(dynamo, rule, key), "rate_limit": rate_limit(rule, ctx)}
+    notes = {"duplicate": lifecycle.repeat_of(dynamo, rule, key) is not None, "rate_limit": rate_limit(rule, ctx)}
     evaluation = rule_type.evaluate(data, rule["parameters"], ctx)
     if isinstance(evaluation, NoMatch):
         return ok({"outcome": "NO_MATCH", "reason": evaluation.reason, **notes})

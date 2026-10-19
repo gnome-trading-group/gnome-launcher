@@ -22,7 +22,7 @@ from launcher.links import request_links
 from launcher.models import LaunchRequest
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
 from launcher.rules.types import ResolvedStrategyConfig
-from launcher.slack_client import SlackClient
+from launcher.slack_client import SlackClient, request_reason
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,10 @@ def _approve(request: LaunchRequest, who: str, dynamo: DynamoClient):
         approved = dynamo.transition(request["request_id"], "PENDING_SHUTDOWN_APPROVAL", "SHUTDOWN_APPROVED", who,
                                      approved_by=who)
         function_name, text = APPROVE_SHUTDOWN_FUNCTION_NAME, f"Shutdown approved by {who} in the controller"
+    elif lifecycle.is_expired(request.get("expires_at")):
+        if lifecycle.expire(dynamo, SlackClient(), request, "PENDING_APPROVAL", who) is None:
+            return _moved_on(request, dynamo)
+        return error(409, f"The request expired: {lifecycle.expiry_note(request)}")
     else:
         approved = dynamo.transition(request["request_id"], "PENDING_APPROVAL", "APPROVED", who, approved_by=who)
         function_name, text = APPROVE_LAUNCH_FUNCTION_NAME, f"Launch approved by {who} in the controller"
@@ -131,12 +135,14 @@ def _retry(request: LaunchRequest, who: str, dynamo: DynamoClient):
     rule = dynamo.get_rule(request["matched_rule_id"])
     if rule is None or rule["status"] != "active":
         return error(409, "The rule that made this request is no longer active")
+    if lifecycle.is_expired(request.get("expires_at")):
+        return error(409, f"Too late to retry: {lifecycle.expiry_note(request)}")
     retry = dynamo.create_launch_request(
         rule_type=request["rule_type"], data=request["data"], dedup_key=request["dedup_key"],
         resolved_config=request["resolved_config"], matched_rule_id=rule["rule_id"], matched_rule_name=rule["name"],
         launch_path="approval", status="APPROVED", actor=who, note=f"retry of {request['request_id']}",
         trigger_id=request.get("trigger_id"), rule_revision=request.get("rule_revision"),
-        retry_of=request["request_id"], links=request.get("links"),
+        retry_of=request["request_id"], links=request.get("links"), expires_at=request.get("expires_at"),
     )
     _invoke(APPROVE_LAUNCH_FUNCTION_NAME, retry["request_id"], who)
     return ok(retry, 202)
@@ -157,14 +163,15 @@ def _resend(request: LaunchRequest, who: str, dynamo: DynamoClient):
         links = request_links(request["rule_type"], request["data"], strategy_id,
                               (request["resolved_config"] or {}).get("listings", []), RegistryClient())
         dynamo.annotate(request["request_id"], links=links)
-    events = request.get("events") or [{}]
-    reason = events[0].get("note") or request["matched_rule_name"]
+    reason = request_reason(request)
     if request["status"] == "PENDING_APPROVAL":
         scheduled = request.get("scheduled_time")
         ts = slack.send_approval_message(
             request_id=request["request_id"], rule_name=request["matched_rule_name"],
             rule_id=request["matched_rule_id"], reason=reason, config=ResolvedStrategyConfig(**request["resolved_config"]),
             links=links, scheduled_time=datetime.fromisoformat(scheduled) if scheduled else None,
+            expires_at=lifecycle.deadline(request.get("expires_at")),
+            deadline_label=lifecycle.deadline_label(request["rule_type"]),
         )
     else:
         ts = slack.send_shutdown_approval_message(

@@ -150,6 +150,8 @@ class RuleType:
     display_name: str
     parameter_schema: dict
     data_schema: dict
+    # What this type's trigger deadline is, in "Expires at <label>" and "Expired: <label> was ...".
+    deadline_label: str = "deadline"
 
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
         raise NotImplementedError

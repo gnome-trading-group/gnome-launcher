@@ -1,9 +1,4 @@
-import hashlib
-import hmac
-import json
-import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
 
 import boto3
 import pytest
@@ -11,7 +6,6 @@ import requests
 
 from launcher import lifecycle
 from launcher.handlers import scheduled_launch, shutdown_processor, trigger_processor
-from launcher.handlers.slack import approve_launch, approve_shutdown, interaction
 from tests.conftest import STRATEGY, in_minutes
 
 
@@ -173,48 +167,6 @@ def test_disabled_rules_dont_launch(ctx, make_rule):
 
 
 # ---- approvals -----------------------------------------------------------------------------------------------------
-
-SIGNING_SECRET = "secret"
-
-
-class _Lambda:
-    def __init__(self):
-        self.invoked = []
-
-    def invoke(self, FunctionName, InvocationType, Payload):
-        self.invoked.append((FunctionName, json.loads(Payload)))
-
-
-@pytest.fixture
-def slack_click(ctx, monkeypatch):
-    lam = _Lambda()
-    monkeypatch.setattr(interaction, "_get_signing_secret", lambda: SIGNING_SECRET)
-    monkeypatch.setattr(interaction, "_lambda_client", lam)
-    monkeypatch.setattr(interaction, "SlackClient", lambda: ctx.slack)
-
-    def click(action_id, request_id, username="mason", action=None):
-        body = urlencode({"payload": json.dumps({
-            "actions": [action or {"action_id": action_id, "value": request_id}], "user": {"id": "U1", "username": username}})})
-        ts = str(int(time.time()))
-        sig = "v0=" + hmac.new(SIGNING_SECRET.encode(), f"v0:{ts}:{body}".encode(), hashlib.sha256).hexdigest()
-        return interaction.handler({"headers": {"x-slack-request-timestamp": ts, "x-slack-signature": sig},
-                                    "body": body}, None)
-    click.lambda_client = lam
-    return click
-
-
-@pytest.fixture
-def run_async(ctx, monkeypatch):
-    for module in (approve_launch, approve_shutdown):
-        monkeypatch.setattr(module, "RegistryClient", lambda: ctx.registry)
-        monkeypatch.setattr(module, "SlackClient", lambda: ctx.slack)
-
-    def run(click):
-        for function, payload in click.lambda_client.invoked:
-            (approve_launch if function == "approve-launch" else approve_shutdown).handler(payload, None)
-        click.lambda_client.invoked.clear()
-    return run
-
 
 def test_an_approval_rule_waits_for_slack(ctx, make_rule):
     rule = make_rule(launch_path="approval")

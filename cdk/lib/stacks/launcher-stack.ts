@@ -488,8 +488,8 @@ export class LauncherStack extends cdk.Stack {
 
     // ── Sweeper Lambda ────────────────────────────────────────────────────
 
-    // Keeps launched requests in step with their sessions, and resolves requests stuck between steps
-    // (launcher/handlers/sweeper.py).
+    // Keeps launched requests in step with their sessions, resolves requests stuck between steps, and expires
+    // requests past their deadline, deleting a scheduled one's schedule (launcher/handlers/sweeper.py).
     const sweeperFn = createLambda(
       'Sweeper',
       'launcher.handlers.sweeper.handler',
@@ -502,6 +502,10 @@ export class LauncherStack extends cdk.Stack {
         fn.addToRolePolicy(new iam.PolicyStatement({
           actions: ['apigateway:GET'],
           resources: [registryApiKeyArn],
+        }));
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['scheduler:DeleteSchedule'],
+          resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/launcher-*`],
         }));
       },
     );

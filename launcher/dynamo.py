@@ -111,6 +111,7 @@ class DynamoClient:
         rule_revision: int | None = None,
         retry_of: str | None = None,
         links: dict | None = None,
+        expires_at: str | None = None,
     ) -> LaunchRequest:
         now = _now()
         item: LaunchRequest = {
@@ -135,6 +136,7 @@ class DynamoClient:
             "target_session_ids": target_session_ids,
             "scheduled_time": scheduled_time,
             "schedule_name": None,
+            "expires_at": expires_at,
             "launch_error": None,
             "links": links,
             "events": [_event(status, actor, note)],

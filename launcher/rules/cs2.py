@@ -46,6 +46,7 @@ def _listings(data: dict) -> list[int]:
 class CS2Rule(RuleType):
     type = "cs2"
     display_name = "CS2 match"
+    deadline_label = "kickoff"
 
     data_schema = {
         "type": "object",

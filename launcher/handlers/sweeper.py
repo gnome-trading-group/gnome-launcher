@@ -4,7 +4,9 @@
   from the registry until the session has ended, so a request says how its session went, not just that it began.
 - A request stuck between steps (a Lambda that died after moving it to LAUNCHING, APPROVED or STOPPING) is
   resolved: a LAUNCHING one becomes LAUNCHED if the registry has its session, otherwise it fails.
-- An approval nobody acted on expires, so a stale launch can't be approved hours after its moment has passed.
+- A request that hasn't launched by its trigger's deadline (a CS2 match's kickoff) expires, and its Slack buttons go.
+- An approval nobody acted on, with no deadline, is cancelled after a day, so a stale launch can't be approved long
+  after its moment has passed.
 """
 from __future__ import annotations
 
@@ -34,6 +36,10 @@ def handler(event, context):
 
 def sweep(ctx: RuleContext, now: datetime | None = None) -> None:
     now = now or datetime.now(timezone.utc)
+    for status in ("PENDING_APPROVAL", "APPROVED", "SCHEDULED"):
+        for request in ctx.dynamo.requests_in_status(status):
+            if lifecycle.is_expired(request.get("expires_at"), now):
+                lifecycle.expire(ctx.dynamo, ctx.slack, request, status, ACTOR)
     for request in ctx.dynamo.tracked_requests():
         _follow_session(ctx, request)
     for request in ctx.dynamo.requests_in_status("LAUNCHING"):

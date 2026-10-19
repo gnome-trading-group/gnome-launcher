@@ -3,6 +3,8 @@ its rule type, checked before any rule sees it. A rule that would only fail when
 strategy_id, a simulation block the orchestrator can't read) is refused when it is saved instead."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from jsonschema import Draft202012Validator
 
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
@@ -66,3 +68,13 @@ def validate_data(rule_type: str, data) -> list[str]:
     if rule_type_cls is None:
         return [f"unknown rule type {rule_type!r}"]
     return _errors(rule_type_cls.data_schema, data, "data")
+
+
+def validate_deadline(deadline) -> list[str]:
+    if deadline is None:
+        return []
+    try:
+        when = datetime.fromisoformat(deadline)
+    except (TypeError, ValueError):
+        return [f"deadline: {deadline!r} isn't an ISO time"]
+    return [] if when.tzinfo else [f"deadline: {deadline!r} has no timezone"]

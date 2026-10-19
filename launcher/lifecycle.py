@@ -19,8 +19,10 @@ import boto3
 from launcher import alerts
 from launcher.dynamo import TRACKING_OPEN, DynamoClient
 from launcher.models import DEAD_END_STATUSES, OPEN_STATUSES, LaunchRequest, LaunchRule
+from launcher.rules.catalog import RULE_TYPE_REGISTRY
 from launcher.rules.types import ResolvedStrategyConfig, RuleContext
 from launcher.sessions import ACTIVE_SESSION_STATUSES, RULE_ID_KEY, create_session, find_session, listing_ids
+from launcher.slack_client import SlackClient, format_time
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +37,71 @@ def dedup_key(rule_type: str, action: str, data: dict) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:24]
 
 
-def is_repeat(dynamo: DynamoClient, rule: LaunchRule, key: str) -> bool:
-    """Whether this rule already acted on this trigger: it has a request for it still open (awaiting approval, say),
-    however old, or one inside its own dedup window. A request that went nowhere (failed, rejected, cancelled)
-    doesn't count, so the next identical trigger retries it."""
+def repeat_of(dynamo: DynamoClient, rule: LaunchRule, key: str) -> LaunchRequest | None:
+    """The request by which this rule already acted on this trigger, if any: one still open (awaiting approval,
+    say), however old, or one inside the rule's dedup window. An open one is preferred, since a repeat may move its
+    deadline. A request that went nowhere (failed, rejected, cancelled, expired) doesn't count, so the next
+    identical trigger retries it."""
     window = rule.get("dedup_window_minutes")
     window = DEFAULT_DEDUP_WINDOW_MINUTES if window is None else window
     since = (datetime.now(timezone.utc) - timedelta(minutes=window)).isoformat()
+    mine = [r for r in dynamo.requests_with_dedup_key(key) if r["matched_rule_id"] == rule["rule_id"]]
     # A window of 0 turns off the window, not the open check: a second request for a launch still awaiting
     # approval would only be a second approval message for the same session.
-    return any(r["status"] in OPEN_STATUSES
-               or (window and r["status"] not in DEAD_END_STATUSES and r["date_created"] >= since)
-               for r in dynamo.requests_with_dedup_key(key) if r["matched_rule_id"] == rule["rule_id"])
+    return next((r for r in mine if r["status"] in OPEN_STATUSES), None) or next(
+        (r for r in mine if window and r["status"] not in DEAD_END_STATUSES and r["date_created"] >= since), None)
+
+
+def deadline(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value).astimezone(timezone.utc)
+
+
+def is_expired(expires_at: str | None, now: datetime | None = None) -> bool:
+    when = deadline(expires_at)
+    return when is not None and when <= (now or datetime.now(timezone.utc))
+
+
+def deadline_label(rule_type: str) -> str:
+    return RULE_TYPE_REGISTRY[rule_type].deadline_label
+
+
+def expiry_note(request: LaunchRequest) -> str:
+    return f"{deadline_label(request['rule_type'])} was {format_time(deadline(request['expires_at']))}"
+
+
+def expire(dynamo: DynamoClient, slack: SlackClient, request: LaunchRequest, expected: str,
+           actor: str) -> LaunchRequest | None:
+    """Ends a request that ran out of time before it launched, and takes the buttons off its Slack message."""
+    note = expiry_note(request)
+    expired = dynamo.transition(request["request_id"], expected, "EXPIRED", actor, note=note)
+    if expired is None:
+        return None
+    if expected == "SCHEDULED":
+        delete_schedule(request.get("schedule_name"))
+    text = f"Expired: {note}"
+    slack.update_message(request.get("slack_message_ts"), text,
+                         blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": f":hourglass: {text}"}}])
+    return expired
+
+
+def move_expiry(ctx: RuleContext, request: LaunchRequest, expires_at: str | None) -> bool:
+    """A repeat trigger carrying a different deadline (a kickoff moved) moves a request that hasn't launched yet.
+    Once a request has expired it is a dead end, so a deadline moved later after that gets a new request instead."""
+    if request["status"] not in ("PENDING_APPROVAL", "SCHEDULED") or deadline(expires_at) == deadline(request.get("expires_at")):
+        return False
+    label = deadline_label(request["rule_type"])
+    note = f"{label} moved to {format_time(deadline(expires_at))}" if expires_at else f"{label} dropped"
+    moved = ctx.dynamo.transition(request["request_id"], request["status"], request["status"], AUTO_ACTOR, note=note,
+                                  expires_at=expires_at)
+    if moved is None:
+        return False
+    if moved["status"] == "PENDING_APPROVAL":
+        ctx.slack.refresh_approval_message(moved, label)
+    else:
+        ctx.slack.post_thread_reply(moved.get("slack_message_ts"), f":hourglass: {note}")
+    return True
 
 
 # The registry refuses a session whose listings overlap another session of the same strategy and mode that still

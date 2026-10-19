@@ -1,12 +1,13 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import boto3
 import requests
 
 from launcher.links import listing_url, request_url, rule_url, session_url, strategy_url
+from launcher.models import LaunchRequest
 from launcher.rules.types import ResolvedStrategyConfig
 
 logger = logging.getLogger(__name__)
@@ -65,17 +66,31 @@ class SlackClient:
         links: dict,
         scheduled_time: datetime | None = None,
         schedule_reason: str | None = None,
+        expires_at: datetime | None = None,
+        deadline_label: str = "deadline",
     ) -> str | None:
         if not self.channel:
             return None
         blocks = _build_approval_blocks(request_id, rule_name, rule_id, reason, config, links, scheduled_time,
-                                        schedule_reason)
+                                        schedule_reason, expires_at, deadline_label)
         result = _post("chat.postMessage", {
             "channel": self.channel,
             "text": f"Strategy launch approval needed: {rule_name}",
             "blocks": blocks,
         })
         return result["ts"]
+
+    def refresh_approval_message(self, request: LaunchRequest, deadline_label: str) -> None:
+        """Rebuilds a pending request's approval message from the request as stored, after its deadline moved."""
+        scheduled = request.get("scheduled_time")
+        expires_at = request.get("expires_at")
+        blocks = _build_approval_blocks(
+            request["request_id"], request["matched_rule_name"], request["matched_rule_id"], request_reason(request),
+            ResolvedStrategyConfig(**request["resolved_config"]), request.get("links") or {},
+            datetime.fromisoformat(scheduled) if scheduled else None, None,
+            datetime.fromisoformat(expires_at) if expires_at else None, deadline_label)
+        self.update_message(request.get("slack_message_ts"),
+                            f"Strategy launch approval needed: {request['matched_rule_name']}", blocks=blocks)
 
     def post_thread_reply(self, thread_ts: str | None, text: str):
         if not self.channel or not thread_ts:
@@ -192,12 +207,16 @@ def _build_approval_blocks(
     links: dict,
     scheduled_time: datetime | None = None,
     schedule_reason: str | None = None,
+    expires_at: datetime | None = None,
+    deadline_label: str = "deadline",
 ) -> list[dict]:
     fields = _launch_fields(rule_name, rule_id, config, links)
     if scheduled_time:
-        fields.append(_field("Launches at", _when(scheduled_time)))
+        fields.append(_field("Launches at", format_time(scheduled_time)))
         if schedule_reason:
             fields.append(_field("Why then", schedule_reason))
+    if expires_at:
+        fields.append(_field("Expires", f"at {deadline_label}, {format_time(expires_at)}"))
     buttons = [_button("Approve", "launch_approve", request_id, "primary"),
                _button("Reject", "launch_reject", request_id, "danger")]
     if scheduled_time:
@@ -236,7 +255,7 @@ def _build_scheduled_launch_blocks(
 ) -> list[dict]:
     approval_note = " (approval required at launch)" if launch_path == "approval" else ""
     fields = _launch_fields(rule_name, rule_id, config, links)
-    fields.append(_field("Launches at", _when(scheduled_time) + approval_note))
+    fields.append(_field("Launches at", format_time(scheduled_time) + approval_note))
     fields.append(_field("Why then", schedule_reason))
     buttons = [_button("Modify time", "schedule_modify", request_id),
                _button("Cancel", "schedule_cancel", request_id, "danger")]
@@ -278,8 +297,14 @@ def _field(name: str, value: str) -> dict:
     return {"type": "mrkdwn", "text": f"*{name}*\n{value}"}
 
 
-def _when(at: datetime) -> str:
-    return at.strftime("%Y-%m-%d %H:%M UTC")
+def format_time(at: datetime) -> str:
+    return at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def request_reason(request: LaunchRequest) -> str:
+    """Why the request was made: the note its first event was recorded with."""
+    events = request.get("events") or [{}]
+    return events[0].get("note") or request["matched_rule_name"]
 
 
 def _rule_field(rule_name: str, rule_id: str) -> dict:

@@ -1,8 +1,13 @@
 """Launcher flows run against moto's DynamoDB, SQS and EventBridge Scheduler. The registry and Slack are the two
 services outside AWS, so they are in-memory stand-ins that record what they were asked to do."""
+import hashlib
+import hmac
+import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import boto3
 import pytest
@@ -19,6 +24,8 @@ os.environ.update({
 })
 
 from launcher.dynamo import REQUESTS_TABLE, REVISIONS_TABLE, RULES_TABLE, TRIGGERS_TABLE, DynamoClient  # noqa: E402
+from launcher.handlers.api import launch_requests  # noqa: E402
+from launcher.handlers.slack import approve_launch, approve_shutdown, interaction  # noqa: E402
 from launcher.rules.types import (  # noqa: E402
     STRATEGY_PARAMS_SCHEMA,
     STRATEGY_REQUIRED_PARAMS,
@@ -146,6 +153,10 @@ class FakeSlack:
     def send_scheduled_launch_message(self, **fields):
         return self._send("scheduled", **fields)
 
+    def refresh_approval_message(self, request, deadline_label):
+        self.sent.append(("refresh", {"message_ts": request.get("slack_message_ts"), "expires_at": request["expires_at"],
+                                      "deadline_label": deadline_label}))
+
     def post_thread_reply(self, thread_ts, text):
         self.sent.append(("reply", {"thread_ts": thread_ts, "text": text}))
 
@@ -215,3 +226,63 @@ def make_rule(ctx):
 
 def in_minutes(minutes: float) -> str:
     return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+
+
+# ---- approvals, as Slack clicks and controller calls make them -----------------------------------------------------
+
+SIGNING_SECRET = "secret"
+
+
+class _Lambda:
+    def __init__(self):
+        self.invoked = []
+
+    def invoke(self, FunctionName, InvocationType, Payload):
+        self.invoked.append((FunctionName, json.loads(Payload)))
+
+
+@pytest.fixture
+def slack_click(ctx, monkeypatch):
+    lam = _Lambda()
+    monkeypatch.setattr(interaction, "_get_signing_secret", lambda: SIGNING_SECRET)
+    monkeypatch.setattr(interaction, "_lambda_client", lam)
+    monkeypatch.setattr(interaction, "SlackClient", lambda: ctx.slack)
+
+    def click(action_id, request_id, username="mason", action=None):
+        body = urlencode({"payload": json.dumps({
+            "actions": [action or {"action_id": action_id, "value": request_id}], "user": {"id": "U1", "username": username}})})
+        ts = str(int(time.time()))
+        sig = "v0=" + hmac.new(SIGNING_SECRET.encode(), f"v0:{ts}:{body}".encode(), hashlib.sha256).hexdigest()
+        return interaction.handler({"headers": {"x-slack-request-timestamp": ts, "x-slack-signature": sig},
+                                    "body": body}, None)
+    click.lambda_client = lam
+    return click
+
+
+@pytest.fixture
+def run_async(ctx, monkeypatch):
+    for module in (approve_launch, approve_shutdown):
+        monkeypatch.setattr(module, "RegistryClient", lambda: ctx.registry)
+        monkeypatch.setattr(module, "SlackClient", lambda: ctx.slack)
+
+    def run(click):
+        for function, payload in click.lambda_client.invoked:
+            (approve_launch if function == "approve-launch" else approve_shutdown).handler(payload, None)
+        click.lambda_client.invoked.clear()
+    return run
+
+
+@pytest.fixture
+def invoked(ctx, monkeypatch):
+    calls = []
+    monkeypatch.setattr(launch_requests, "_invoke", lambda function, request_id, who: calls.append((request_id, who)))
+    monkeypatch.setattr(launch_requests, "SlackClient", lambda: ctx.slack)
+    monkeypatch.setattr(approve_launch, "RegistryClient", lambda: ctx.registry)
+    monkeypatch.setattr(approve_launch, "SlackClient", lambda: ctx.slack)
+
+    def run():
+        for request_id, who in calls:
+            approve_launch.handler({"request_id": request_id, "username": who, "actor": who}, None)
+        calls.clear()
+    run.calls = calls
+    return run
