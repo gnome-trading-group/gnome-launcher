@@ -209,9 +209,9 @@ def test_a_request_with_no_deadline_never_expires(ctx, make_rule):
     assert ctx.dynamo.get_request(request["request_id"])["status"] == "PENDING_APPROVAL"
 
 
-def test_a_cs2_requests_expiry_is_told_as_its_kickoff():
+def test_a_cs2_requests_expiry_is_told_as_its_entry_cutoff():
     request = {"rule_type": "cs2", "expires_at": "2026-10-18T17:00:00+02:00"}
-    assert lifecycle.expiry_note(request) == "kickoff was 2026-10-18 15:00 UTC"
+    assert lifecycle.expiry_note(request) == "entry cutoff was 2026-10-18 15:00 UTC"
 
 
 def test_trigger_messages_carry_the_deadline_beside_the_data(aws):

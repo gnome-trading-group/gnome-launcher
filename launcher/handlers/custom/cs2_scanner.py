@@ -8,15 +8,18 @@ its HLTV status (upcoming, live, then missing once it leaves HLTV's listing) and
 series market is in the registry, a leg per venue and market with the two team listings. For the
 newest row of each match:
 
-- launch, per leg, while HLTV still lists it upcoming, kickoff is under LAUNCH_LEAD away and the row
-  is fresh (a stalled pipeline would otherwise keep launching sessions onto a frozen feed);
+- launch, per leg, while HLTV still lists it upcoming, kickoff is under LAUNCH_LEAD away but more than
+  LAUNCH_CUTOFF away, and the row is fresh (a stalled pipeline would otherwise keep launching sessions
+  onto a frozen feed);
 - shut down, per leg, once HLTV lists it missing (it has left the listing: finished, or dropped), or
-  SHUTDOWN_AFTER past kickoff. A live match is left running: the session stops trading at kickoff
-  but keeps marking its positions until the match ends.
+  SHUTDOWN_AFTER past kickoff. The session ends itself at its entry cutoff, so these only catch one
+  that didn't.
 
 Each scan resends the same triggers; the launcher's dedup and its active-session check make the
-repeats no-ops, and a session that died before kickoff is relaunched by a later scan. A launch trigger's
-deadline is the kickoff, so a request still awaiting approval then can't launch; a moved kickoff moves it.
+repeats no-ops, and a session that died before the cutoff is relaunched by a later scan. A launch
+trigger's deadline is the cutoff, so a request still awaiting approval then can't launch; a moved
+kickoff moves it. Past the cutoff nothing launches, which is also what keeps a session that ended there
+from being started again.
 """
 from __future__ import annotations
 
@@ -40,6 +43,9 @@ UPCOMING = "upcoming"
 MISSING = "missing"
 # Matches are tracked from 12h out; the hour of slack covers a run that lands just before the window.
 LAUNCH_LEAD = pd.Timedelta(hours=13)
+# cs2_series stops trading and ends this long before kickoff (its entry_cutoff_hours); a session launched
+# later could never trade.
+LAUNCH_CUTOFF = pd.Timedelta(hours=3)
 # The strategy exits on its own once the match ends, or 8h after kickoff if the pipeline stalls; this frees
 # the instance if it doesn't.
 SHUTDOWN_AFTER = pd.Timedelta(hours=9)
@@ -55,11 +61,11 @@ def latest(rows: pd.DataFrame) -> pd.DataFrame:
 
 def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, str | None]]:
     """("launch" | "shutdown", trigger data, deadline) for each leg of each match's newest row; a launch's deadline
-    is the kickoff, a shutdown has none."""
+    is the entry cutoff, a shutdown has none."""
     out = []
     for m in matches.itertuples():
         kickoff = pd.Timestamp(m.kickoff)
-        if m.status == UPCOMING and now < kickoff <= now + LAUNCH_LEAD:
+        if m.status == UPCOMING and now + LAUNCH_CUTOFF < kickoff <= now + LAUNCH_LEAD:
             if now - pd.Timestamp(m.generated_at) > FRESH:
                 continue
             action = "launch"
@@ -71,7 +77,7 @@ def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, 
             out.append((action, {
                 "match_id": int(m.match_id), "venue": leg["venue"], "market": leg["market"],
                 "listing_team_a": int(leg["listing_team_a"]), "listing_team_b": int(leg["listing_team_b"]),
-            }, kickoff.isoformat() if action == "launch" else None))
+            }, (kickoff - LAUNCH_CUTOFF).isoformat() if action == "launch" else None))
     return out
 
 

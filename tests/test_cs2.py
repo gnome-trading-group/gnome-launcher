@@ -83,7 +83,13 @@ def test_scanner_launches_fresh_upcoming_legs_inside_the_lead_and_skips_the_rest
 
     assert [(a, d["match_id"], d["venue"]) for a, d, _ in found] == [("launch", 1, "kalshi"), ("launch", 1, "polymarket")]
     assert found[0][1] == {"match_id": 1, "venue": "kalshi", "market": "series", "listing_team_a": 11, "listing_team_b": 12}
-    assert found[0][2] == "2026-10-16T08:00:00+00:00"
+    assert found[0][2] == "2026-10-16T05:00:00+00:00", "a request still awaiting approval at the entry cutoff can't launch"
+
+
+def test_scanner_launches_nothing_inside_the_entry_cutoff():
+    rows = pd.DataFrame([_row(1, "2026-10-16T03:01Z"), _row(2, "2026-10-16T03:00Z"), _row(3, "2026-10-16T01:00Z")])
+
+    assert [(a, d["match_id"]) for a, d, _ in triggers(rows, NOW)] == [("launch", 1)]
 
 
 def test_scanner_shuts_down_missing_and_long_started_matches_but_leaves_live_ones():
