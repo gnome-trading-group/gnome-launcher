@@ -132,3 +132,43 @@ def test_first_matching_event_wins():
     result = rule.evaluate(data, _base_params(allowed_categories=["crypto"]), ctx)
     assert result is not None
     assert "Crypto Event" in result.reason
+
+
+def _session(session_id, listings):
+    return SimpleNamespace(session_id=session_id, config={"listings": listings})
+
+
+def _shutdown_ctx(sessions, event_by_listing):
+    ctx = MagicMock()
+    ctx.registry.get_strategy_sessions.return_value = sessions
+    ctx.registry.get_listing.side_effect = lambda listing_id: [SimpleNamespace(listing_id=listing_id, security_id=listing_id)]
+    ctx.registry.get_event_contracts.side_effect = lambda security_id: (
+        [SimpleNamespace(event_id=event_by_listing[security_id], security_id=security_id)]
+        if security_id in event_by_listing else []
+    )
+    return ctx
+
+
+def test_shutdown_targets_sessions_holding_a_resolved_event():
+    sessions = [_session("a", [100]), _session("b", "101,102"), _session("c", [103])]
+    ctx = _shutdown_ctx(sessions, {100: 1, 101: 2, 102: 3, 103: 4})
+    data = {"event_ids": [1, 3], "event_names": ["One", "Three"]}
+    result = ClassifierEventRule().evaluate_shutdown(data, _base_params(), ctx)
+    assert result.target_session_ids == ["a", "b"]
+
+
+def test_shutdown_lookups_scale_with_held_listings_not_resolved_events():
+    sessions = [_session("a", [100]), _session("b", [100])]
+    ctx = _shutdown_ctx(sessions, {100: 7})
+    data = {"event_ids": list(range(1000)), "event_names": [f"Event {i}" for i in range(1000)]}
+    result = ClassifierEventRule().evaluate_shutdown(data, _base_params(), ctx)
+    assert result.target_session_ids == ["a", "b"]
+    assert ctx.registry.get_listing.call_count == 1
+    assert ctx.registry.get_event_contracts.call_count == 1
+
+
+def test_shutdown_no_match_when_no_session_holds_a_resolved_event():
+    ctx = _shutdown_ctx([_session("a", [100])], {100: 1})
+    data = {"event_ids": [2], "event_names": ["Two"]}
+    result = ClassifierEventRule().evaluate_shutdown(data, _base_params(), ctx)
+    assert result.reason == "no running session holds the resolved events' listings"

@@ -137,7 +137,7 @@ class ClassifierEventRule(RuleType):
         return NoMatch("; ".join(skipped) or "no events")
 
     def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | NoMatch:
-        event_ids = data["event_ids"]
+        resolved_event_ids = set(data["event_ids"])
         event_names = data["event_names"]
 
         strategy_id = params["strategy_id"]
@@ -145,21 +145,16 @@ class ClassifierEventRule(RuleType):
         if not running_sessions:
             return NoMatch("no running session of the strategy")
 
-        resolved_listing_ids: set[int] = set()
-        for event_id in event_ids:
-            contracts = ctx.registry.get_event_contracts(event_id=event_id)
-            for contract in contracts:
-                listings = ctx.registry.get_listing(security_id=contract.security_id)
-                resolved_listing_ids.update(l.listing_id for l in listings)
-
-        if not resolved_listing_ids:
-            return NoMatch("the resolved events have no listings")
-
-        target_session_ids = [
-            s.session_id
-            for s in running_sessions
-            if listing_ids(s.config.get("listings", [])) & resolved_listing_ids
-        ]
+        # Walked from the sessions' listings, not the resolved events: one resolution batch can carry hundreds of
+        # events, and a call per event outlasts the Lambda timeout.
+        events_by_listing: dict[int, set[int]] = {}
+        target_session_ids = []
+        for session in running_sessions:
+            held = listing_ids(session.config.get("listings", []))
+            for listing_id in held - events_by_listing.keys():
+                events_by_listing[listing_id] = self._listing_event_ids(listing_id, ctx)
+            if any(events_by_listing[listing_id] & resolved_event_ids for listing_id in held):
+                target_session_ids.append(session.session_id)
         if not target_session_ids:
             return NoMatch("no running session holds the resolved events' listings")
 
@@ -174,18 +169,10 @@ class ClassifierEventRule(RuleType):
         event_ids = data["event_ids"]
         event_names = data["event_names"]
 
-        contract_names: list[str] = []
-        for event_id in event_ids:
-            contracts = ctx.registry.get_event_contracts(event_id=event_id)
-            contract_names.extend(c.name for c in contracts if hasattr(c, "name") and c.name)
-
-        if not contract_names and event_names:
-            contract_names = list(event_names)
-
-        if not contract_names:
+        if not event_names:
             return None
 
-        contracts_text = "\n".join(f"- {n}" for n in contract_names[:10])
+        contracts_text = "\n".join(f"- {n}" for n in event_names[:10])
         prompt = (
             "Extract the event start date and time from the following prediction market contract names. "
             "Return a JSON object with a single field 'start_time' (ISO 8601, UTC) "
@@ -222,6 +209,13 @@ class ClassifierEventRule(RuleType):
         except Exception:
             logger.exception("Failed to extract schedule time for events %s", event_ids)
             return None
+
+    def _listing_event_ids(self, listing_id: int, ctx: RuleContext) -> set[int]:
+        return {
+            contract.event_id
+            for listing in ctx.registry.get_listing(listing_id=listing_id)
+            for contract in ctx.registry.get_event_contracts(security_id=listing.security_id)
+        }
 
     def _resolve_listings(
         self, contracts, params: dict, ctx: RuleContext
