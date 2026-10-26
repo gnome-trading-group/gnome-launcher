@@ -38,9 +38,9 @@ def api_handler(fn):
 
 
 def actor(event: dict) -> str:
-    """Who made an API call: the operator's email from their Cognito token."""
-    claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("claims") or {}
-    return f"ui:{claims.get('email') or claims.get('cognito:username') or 'unknown'}"
+    """Who made an API call: the operator's email, as the API authorizer read it from their token."""
+    authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
+    return f"ui:{authorizer.get('email') or 'unknown'}"
 
 
 def body_of(event: dict) -> dict | None:

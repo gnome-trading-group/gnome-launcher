@@ -15,7 +15,7 @@ import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { join } from 'path';
-import { Stage } from '@gnome-trading-group/gnome-shared-cdk';
+import { CallerKind, GnomeApiAuthorizer, Stage } from '@gnome-trading-group/gnome-shared-cdk';
 import { grantResearchTablesRead } from '../research-tables';
 
 interface Props extends cdk.StackProps {
@@ -526,7 +526,7 @@ export class LauncherStack extends cdk.Stack {
       },
     });
 
-    // Without these, a request the Cognito authorizer rejects comes back with no CORS headers and the browser
+    // Without these, a request the authorizer rejects comes back with no CORS headers and the browser
     // reports an opaque CORS failure instead of the auth error.
     this.api.addGatewayResponse('Default4xxCors', {
       type: apigateway.ResponseType.DEFAULT_4XX,
@@ -537,46 +537,49 @@ export class LauncherStack extends cdk.Stack {
       responseHeaders: { 'Access-Control-Allow-Origin': "'*'" },
     });
 
-    // Only people drive this API (the controller UI), so it takes a Cognito ID token rather than an API key that
-    // would have to ship in the browser bundle. Slack approvals arrive through LauncherSlackInteractionStack instead.
+    // People drive this API (the controller UI) with a Cognito ID token, and gnome-bot may read it to answer what is
+    // launching; no service calls it, so it has no API key. Slack approvals arrive through
+    // LauncherSlackInteractionStack instead.
     const userPool = cognito.UserPool.fromUserPoolArn(this, 'OperatorUserPool',
       ssm.StringParameter.valueForStringParameter(this, LauncherStack.USER_POOL_ARN_PARAMETER));
-    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'OperatorAuthorizer', {
-      cognitoUserPools: [userPool],
-    });
+    const auth = new GnomeApiAuthorizer(this, 'Authorizer', { userPool });
     const methodOptions: apigateway.MethodOptions = {
-      authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizer: auth.authorizerFor([CallerKind.PERSON]),
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    };
+    const readOptions: apigateway.MethodOptions = {
+      authorizer: auth.authorizerFor([CallerKind.PERSON, CallerKind.BOT]),
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
     };
     const lambdaIntegration = (fn: lambda.DockerImageFunction) =>
       new apigateway.LambdaIntegration(fn);
 
     const triggers = this.api.root.addResource('triggers');
     triggers.addMethod('POST', lambdaIntegration(apiTriggerFn), methodOptions);
-    triggers.addMethod('GET', lambdaIntegration(apiTriggerFn), methodOptions);
+    triggers.addMethod('GET', lambdaIntegration(apiTriggerFn), readOptions);
 
     const launchRequests = this.api.root.addResource('launch-requests');
-    launchRequests.addMethod('GET', lambdaIntegration(launchRequestsFn), methodOptions);
+    launchRequests.addMethod('GET', lambdaIntegration(launchRequestsFn), readOptions);
     const launchRequestById = launchRequests.addResource('{id}');
-    launchRequestById.addMethod('GET', lambdaIntegration(launchRequestsFn), methodOptions);
+    launchRequestById.addMethod('GET', lambdaIntegration(launchRequestsFn), readOptions);
     // approve | reject | cancel | retry
     launchRequestById.addResource('{action}').addMethod('POST', lambdaIntegration(launchRequestsFn), methodOptions);
 
     const launchRules = this.api.root.addResource('launch-rules');
-    launchRules.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRules.addMethod('GET', lambdaIntegration(launchRulesFn), readOptions);
     launchRules.addMethod('POST', lambdaIntegration(launchRulesFn), methodOptions);
     const launchRuleById = launchRules.addResource('{id}');
-    launchRuleById.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRuleById.addMethod('GET', lambdaIntegration(launchRulesFn), readOptions);
     launchRuleById.addMethod('PATCH', lambdaIntegration(launchRulesFn), methodOptions);
     launchRuleById.addMethod('DELETE', lambdaIntegration(launchRulesFn), methodOptions);
     launchRules.addResource('validate').addMethod('POST', lambdaIntegration(launchRulesFn), methodOptions);
     // revisions | activity | stats (GET) and dry-run (POST)
     const launchRuleView = launchRuleById.addResource('{view}');
-    launchRuleView.addMethod('GET', lambdaIntegration(launchRulesFn), methodOptions);
+    launchRuleView.addMethod('GET', lambdaIntegration(launchRulesFn), readOptions);
     launchRuleView.addMethod('POST', lambdaIntegration(launchRulesFn), methodOptions);
 
     const ruleTypes = this.api.root.addResource('rule-types');
-    ruleTypes.addMethod('GET', lambdaIntegration(ruleTypesFn), methodOptions);
+    ruleTypes.addMethod('GET', lambdaIntegration(ruleTypesFn), readOptions);
 
     new cdk.CfnOutput(this, 'LauncherApiUrl', {
       value: this.api.url,

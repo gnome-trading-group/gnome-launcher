@@ -22,7 +22,7 @@ def log(ctx, trigger_id):
 def api(handler, method, path_params=None, body=None, query=None, resource=""):
     event = {"httpMethod": method, "pathParameters": path_params, "queryStringParameters": query, "resource": resource,
              "body": json.dumps(body) if body is not None else None,
-             "requestContext": {"authorizer": {"claims": {"email": "mason@example.com"}}}}
+             "requestContext": {"authorizer": {"kind": "person", "actor": "mason@example.com", "email": "mason@example.com"}}}
     response = handler(event, None)
     return response["statusCode"], json.loads(response["body"])
 

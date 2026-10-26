@@ -11,7 +11,7 @@
     "diff-substacks": "npx cdk diff '**' -a 'npx ts-node ./bin/cdk.ts'"
   },
   "devDependencies": {
-    "@gnome-trading-group/gnome-shared-cdk": "^1.0.7",
+    "@gnome-trading-group/gnome-shared-cdk": "^1.1.0",
     "@types/node": "22.7.9",
     "aws-cdk": "2.176.0",
     "ts-node": "^10.9.2",
