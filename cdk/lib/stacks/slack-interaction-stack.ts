@@ -8,6 +8,9 @@ import * as secrets from 'aws-cdk-lib/aws-secretsmanager';
 import { join } from 'path';
 import { Stage } from '@gnome-trading-group/gnome-shared-cdk';
 
+// Fixed in gnome-bot's BotStack.
+const BOT_INTERACT_FUNCTION_NAME = 'gnome-bot-interact';
+
 interface Props extends cdk.StackProps {
   stage: Stage;
   slackChannelId: string;
@@ -55,6 +58,7 @@ export class LauncherSlackInteractionStack extends cdk.Stack {
         APPROVE_SHUTDOWN_FUNCTION_NAME: props.approveShutdownFn.functionName,
         SCHEDULED_LAUNCH_FUNCTION_ARN: props.scheduledLaunchFunctionArn,
         SCHEDULER_ROLE_ARN: props.schedulerRoleArn,
+        BOT_INTERACT_FUNCTION_NAME: BOT_INTERACT_FUNCTION_NAME,
       },
     });
 
@@ -62,6 +66,12 @@ export class LauncherSlackInteractionStack extends cdk.Stack {
     slackSigningSecret.grantRead(slackInteractionFn);
     props.approveLaunchFn.grantInvoke(slackInteractionFn);
     props.approveShutdownFn.grantInvoke(slackInteractionFn);
+    // gnome-bot's buttons come through this app too; they're forwarded to its function by name (gnome-bot deploys it
+    // separately, so it may not exist yet, and the forward then fails quietly).
+    slackInteractionFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['lambda:InvokeFunction'],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:${BOT_INTERACT_FUNCTION_NAME}`],
+    }));
 
     slackInteractionFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],

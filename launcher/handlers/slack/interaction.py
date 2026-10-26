@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 SLACK_SIGNING_SECRET_NAME = os.environ.get("SLACK_SIGNING_SECRET", "slack-signing-secret")
 APPROVE_LAUNCH_FUNCTION_NAME = os.environ["APPROVE_LAUNCH_FUNCTION_NAME"]
 APPROVE_SHUTDOWN_FUNCTION_NAME = os.environ["APPROVE_SHUTDOWN_FUNCTION_NAME"]
+# gnome-bot posts its buttons through the same Slack app, so their clicks arrive here; its function has a fixed name.
+BOT_INTERACT_FUNCTION_NAME = os.environ.get("BOT_INTERACT_FUNCTION_NAME", "gnome-bot-interact")
+BOT_ACTION_PREFIX = "bot_"
 
 _lambda_client = boto3.client("lambda")
 _cached_signing_secret: str | None = None
@@ -68,6 +71,9 @@ def handler(event, context):
     # carry no request; those are acknowledged and left alone.
     action = payload["actions"][0]
     action_id = action.get("action_id")
+    if (action_id or "").startswith(BOT_ACTION_PREFIX):
+        _forward_to_bot(payload)
+        return {"statusCode": 200, "body": ""}
     if action_id not in ACTIONS or "value" not in action:
         return {"statusCode": 200, "body": ""}
     request_id = action["value"]
@@ -92,6 +98,15 @@ def handler(event, context):
         _handle_schedule_cancel(request, user_id, username, dynamo, slack)
 
     return {"statusCode": 200, "body": ""}
+
+
+def _forward_to_bot(payload: dict) -> None:
+    """Hands a gnome-bot button click to gnome-bot, already verified, without waiting: Slack wants its 200 in 3s."""
+    try:
+        _lambda_client.invoke(FunctionName=BOT_INTERACT_FUNCTION_NAME, InvocationType="Event",
+                              Payload=json.dumps(payload).encode())
+    except Exception:
+        logger.warning("Couldn't forward %s to gnome-bot", payload["actions"][0].get("action_id"), exc_info=True)
 
 
 def _handle_view_submission(payload: dict, dynamo: DynamoClient, slack: SlackClient) -> dict:
