@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from gnomepy.registry import ContractRelationship
+
 from launcher.rules.classifier_event import ClassifierEventRule
 
 
@@ -8,12 +10,14 @@ def _event(category="crypto"):
     return SimpleNamespace(category=category)
 
 
-def _contract(security_id):
-    return SimpleNamespace(security_id=security_id)
+def _contract(security_id, event_id=1):
+    return SimpleNamespace(security_id=security_id, event_id=event_id)
 
 
-def _relationship(relationship_type):
-    return SimpleNamespace(relationship_type=relationship_type)
+def _relationship(relationship_type, a=10, b=20, flags=()):
+    return ContractRelationship(relationship_id=a * 1000 + b, security_id_a=a, security_id_b=b,
+                                relationship_type=relationship_type, method="derived", date_created="",
+                                flags=list(flags))
 
 
 def _listing(listing_id, exchange_id):
@@ -26,8 +30,9 @@ def _make_ctx(relationships=None, contracts=None, listings_by_security=None):
     ctx.registry.get_event_contracts.return_value = (
         contracts if contracts is not None else [_contract(10), _contract(11)]
     )
-    ctx.registry.get_contract_relationships.return_value = (
-        relationships if relationships is not None else [_relationship("equivalence")]
+    ctx.registry.get_security.return_value = []
+    ctx.registry.get_connected_relationships.return_value = (
+        relationships if relationships is not None else [_relationship("EQUIVALENT")]
     )
     _listings = listings_by_security or {
         10: [_listing(100, 1)],
@@ -77,22 +82,36 @@ def test_no_match_when_insufficient_relationships():
 
 
 def test_no_match_when_required_type_missing():
-    ctx = _make_ctx(relationships=[_relationship("equivalence")])
+    ctx = _make_ctx(relationships=[_relationship("EQUIVALENT")])
     rule = ClassifierEventRule()
     data = {"event_ids": [1], "event_names": ["Test Event"]}
-    result = rule.evaluate(data, _base_params(required_relationship_types=["complement"]), ctx)
+    result = rule.evaluate(data, _base_params(required_relationship_types=["IMPLIES"]), ctx)
     assert result.reason == "Test Event: none of the required relationship types"
 
 
 def test_match_when_required_type_present():
-    ctx = _make_ctx(relationships=[
-        _relationship("equivalence"),
-        _relationship("complement"),
-    ])
+    ctx = _make_ctx(relationships=[_relationship("EQUIVALENT"), _relationship("IMPLIES", a=11, b=30)])
     rule = ClassifierEventRule()
     data = {"event_ids": [1], "event_names": ["Test Event"]}
-    result = rule.evaluate(data, _base_params(required_relationship_types=["complement"]), ctx)
+    result = rule.evaluate(data, _base_params(required_relationship_types=["IMPLIES"]), ctx)
     assert result is not None
+
+
+def test_pairs_implied_through_stored_rows_count():
+    ctx = _make_ctx(relationships=[_relationship("IMPLIES", a=10, b=20), _relationship("IMPLIES", a=20, b=30)])
+    rule = ClassifierEventRule()
+    data = {"event_ids": [1], "event_names": ["Test Event"]}
+    result = rule.evaluate(data, _base_params(min_relationships=2), ctx)
+    assert result.should_launch is True
+    assert "has 2 relationships" in result.reason
+
+
+def test_flagged_pairs_do_not_count():
+    ctx = _make_ctx(relationships=[_relationship("EQUIVALENT", flags=["RESOLUTION_SOURCE_DIFFERS"])])
+    rule = ClassifierEventRule()
+    data = {"event_ids": [1], "event_names": ["Test Event"]}
+    result = rule.evaluate(data, _base_params(min_relationships=1), ctx)
+    assert result.reason == "Test Event: 0 relationship(s), fewer than required"
 
 
 def test_exchange_filter_applied():
@@ -124,7 +143,7 @@ def test_first_matching_event_wins():
         [_event("crypto")],
     ]
     ctx.registry.get_event_contracts.return_value = [_contract(10)]
-    ctx.registry.get_contract_relationships.return_value = [_relationship("equivalence")]
+    ctx.registry.get_connected_relationships.return_value = [_relationship("EQUIVALENT")]
     ctx.registry.get_listing.return_value = [_listing(100, 1)]
 
     rule = ClassifierEventRule()

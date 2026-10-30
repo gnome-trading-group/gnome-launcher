@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import anthropic
 import boto3
+from gnomepy.registry import RelationshipGraph
 
 from launcher.rules.types import (
     STRATEGY_PARAMS_SCHEMA,
@@ -61,11 +62,11 @@ class ClassifierEventRule(RuleType):
             "min_relationships": {
                 "type": "integer",
                 "default": 1,
-                "description": "Minimum cross-exchange relationships required",
+                "description": "Minimum related pairs (equivalent or implied, flagged ones left out) touching the event",
             },
             "required_relationship_types": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": {"type": "string", "enum": ["EQUIVALENT", "IMPLIES"]},
                 "description": "At least one of these relationship types must exist",
             },
             "listing_resolution": {
@@ -104,16 +105,19 @@ class ClassifierEventRule(RuleType):
             contracts = ctx.registry.get_event_contracts(event_id=event_id)
             security_ids = [c.security_id for c in contracts]
 
-            all_relationships = []
-            for sid in security_ids:
-                all_relationships.extend(ctx.registry.get_contract_relationships(security_id=sid))
+            # The registry stores only the fewest rows that rebuild the relationships, so the pairs come from the graph
+            # rebuilt around the event, not from a count of rows.
+            graph = RelationshipGraph.load(ctx.registry, [event_id])
+            own = set(security_ids)
+            pairs = [("EQUIVALENT", a, b) for a, b in graph.get_equivalent_pairs() if a in own or b in own]
+            pairs += [("IMPLIES", a, b) for a, b in graph.get_implies_pairs() if a in own or b in own]
 
-            if len(all_relationships) < params.get("min_relationships", 1):
-                skipped.append(f"{event_name}: {len(all_relationships)} relationship(s), fewer than required")
+            if len(pairs) < params.get("min_relationships", 1):
+                skipped.append(f"{event_name}: {len(pairs)} relationship(s), fewer than required")
                 continue
 
             required_types = set(params.get("required_relationship_types", []))
-            found_types = {r.relationship_type for r in all_relationships}
+            found_types = {relationship_type for relationship_type, _, _ in pairs}
             if required_types and not required_types & found_types:
                 skipped.append(f"{event_name}: none of the required relationship types")
                 continue
@@ -129,7 +133,7 @@ class ClassifierEventRule(RuleType):
                 should_launch=True,
                 resolved_config=resolved_config,
                 reason=(
-                    f"Event '{event_name}' has {len(all_relationships)} relationships"
+                    f"Event '{event_name}' has {len(pairs)} relationships"
                     f" ({', '.join(sorted(found_types))})"
                 ),
             )
