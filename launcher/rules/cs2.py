@@ -1,16 +1,18 @@
 """
-One session per CS2 match per venue, triggered by the cs2_scanner Lambda from gnome-pipelines'
-cs2_upcoming_matches.
+One session per CS2 match, holding every venue's listings for it, triggered by the cs2_scanner Lambda from
+gnome-pipelines' cs2_upcoming_matches.
 
-The trigger carries identifiers only: the HLTV match, the venue, which market and its two team
-listings. Kickoff, lineups and prices are not in it; the session reads them from the cs2_upcoming
-tables as they change. Keeping the trigger the same for the life of a match is what lets the
-launcher's dedup and its active-session check recognise every later scan as a repeat.
+The trigger carries identifiers only: the HLTV match, which market, and per venue its two team listings.
+Kickoff, lineups and prices are not in it; the session reads them from the cs2_upcoming tables as they change.
+Keeping the trigger the same for the life of a match is what lets the launcher's dedup and its active-session
+check recognise every later scan as a repeat.
 
-A rule trades one market (series now; map markets are a later strategy). Each venue's session
-runs in that venue's region (the registry places a session by its listings' exchange), pays that
-venue's taker fee, and in paper mode fills as the venue's exchange is recorded in the registry,
-under any of the rule's simulation overrides for that exchange.
+A rule trades one market (series now; map markets are a later strategy) on the venues it names; the session
+gets the legs of those venues whose listings are in the registry. It pays each venue's taker fee on that venue's
+listings, and in paper mode fills each listing as its exchange is recorded in the registry, under any of the
+rule's simulation overrides for that exchange. Venues sit in different regions (Polymarket International in
+eu-west-1, Kalshi and Polymarket US in us-east-1) and the registry places a session only by a region it is given
+or one its listings share, so the session is placed in HOME_VENUE's region whenever it trades there.
 """
 from __future__ import annotations
 
@@ -32,32 +34,57 @@ from launcher.sessions import ACTIVE_SESSION_STATUSES, listing_ids
 logger = logging.getLogger(__name__)
 
 VENUES = ("polymarket", "kalshi", "polymarket_us")
+# The session prices off this venue's mid (cs2_series blends with it), so it runs where this venue is collected and
+# traded; the other venues' books reach it over the platform's region peering.
+HOME_VENUE = "polymarket"
 # HLTV ignores the slug but needs one: /matches/<id>/ alone serves the home page.
 HLTV_MATCH_URL = "https://www.hltv.org/matches/{match_id}/match"
 MARKETS = ("series", "game1")
 DEFAULT_MARKET = "series"
 
 
-def _listings(data: dict) -> list[int]:
-    return [int(data["listing_team_a"]), int(data["listing_team_b"])]
+def _listings(legs: list[dict]) -> list[int]:
+    return [int(leg[key]) for leg in legs for key in ("listing_team_a", "listing_team_b")]
+
+
+def _region(legs: list[dict], ctx: RuleContext) -> str | None:
+    """HOME_VENUE's exchange region when the session trades it; otherwise the registry places it by its listings."""
+    home = next((leg for leg in legs if leg["venue"] == HOME_VENUE), None)
+    if home is None:
+        return None
+    listing = ctx.registry.get_listing(listing_id=int(home["listing_team_a"]))[0]
+    exchanges = ctx.registry.get_exchange(exchange_id=listing.exchange_id)
+    if not exchanges or not getattr(exchanges[0], "region", None):
+        raise ValueError(f"exchange {listing.exchange_id} of listing {home['listing_team_a']} has no region")
+    return exchanges[0].region
 
 
 @register_rule_type
 class CS2Rule(RuleType):
     type = "cs2"
     display_name = "CS2 match"
-    deadline_label = "entry cutoff"
+    deadline_label = "launch cutoff"
 
     data_schema = {
         "type": "object",
         "properties": {
             "match_id": {"type": "integer", "description": "HLTV match id"},
-            "venue": {"type": "string", "enum": list(VENUES)},
             "market": {"type": "string", "enum": list(MARKETS)},
-            "listing_team_a": {"type": "integer", "description": "the venue's listing for HLTV team A winning"},
-            "listing_team_b": {"type": "integer", "description": "the venue's listing for HLTV team B winning"},
+            "legs": {
+                "type": "array",
+                "description": "per venue with the market, its listings for each HLTV team winning",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "venue": {"type": "string", "enum": list(VENUES)},
+                        "listing_team_a": {"type": "integer"},
+                        "listing_team_b": {"type": "integer"},
+                    },
+                    "required": ["venue", "listing_team_a", "listing_team_b"],
+                },
+            },
         },
-        "required": ["match_id", "venue", "market", "listing_team_a", "listing_team_b"],
+        "required": ["match_id", "market", "legs"],
     }
 
     parameter_schema = {
@@ -73,25 +100,31 @@ class CS2Rule(RuleType):
     }
 
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
-        venue, market = data["venue"], data["market"]
+        market = data["market"]
         if market != params.get("market", DEFAULT_MARKET):
             return NoMatch(f"this rule trades the {params.get('market', DEFAULT_MARKET)} market, not {market}")
-        if venue not in params.get("venues", VENUES):
-            return NoMatch(f"{venue} isn't one of this rule's venues")
-        listings = _listings(data)
-        missing = [lid for lid in listings if not ctx.registry.get_listing(listing_id=lid)]
-        if missing:
-            return NoMatch(f"listings {missing} aren't in the registry")
+        venues = params.get("venues", VENUES)
+        legs, skipped = [], []
+        for leg in data["legs"]:
+            if leg["venue"] not in venues:
+                continue
+            missing = [lid for lid in _listings([leg]) if not ctx.registry.get_listing(listing_id=lid)]
+            if missing:
+                skipped.append(f"{leg['venue']} (listings {missing} aren't in the registry)")
+                continue
+            legs.append({"venue": leg["venue"], "listing_team_a": int(leg["listing_team_a"]),
+                         "listing_team_b": int(leg["listing_team_b"])})
+        if not legs:
+            return NoMatch("no venue of this rule has the match's listings in the registry"
+                           + (f": {', '.join(skipped)}" if skipped else ""))
 
-        config = ResolvedStrategyConfig.from_params(params, listings=listings)
-        config.strategy_args = {
-            **config.strategy_args,
-            "match_id": int(data["match_id"]),
-            "listing_team_a": listings[0],
-            "listing_team_b": listings[1],
-        }
-        return RuleEvaluation(should_launch=True, resolved_config=config,
-                              reason=f"CS2 match {data['match_id']} {market} on {venue}")
+        config = ResolvedStrategyConfig.from_params(params, listings=_listings(legs))
+        config.strategy_args = {**config.strategy_args, "match_id": int(data["match_id"]), "legs": legs}
+        config.region = _region(legs, ctx)
+        reason = f"CS2 match {data['match_id']} {market} on {', '.join(leg['venue'] for leg in legs)}"
+        if skipped:
+            reason += f"; skipped {', '.join(skipped)}"
+        return RuleEvaluation(should_launch=True, resolved_config=config, reason=reason)
 
     def links(self, data: dict) -> list[dict]:
         return [{"label": f"HLTV match {data['match_id']}", "url": HLTV_MATCH_URL.format(match_id=int(data["match_id"]))}]
@@ -101,9 +134,9 @@ class CS2Rule(RuleType):
             return NoMatch(f"this rule trades the {params.get('market', DEFAULT_MARKET)} market, not {data['market']}")
         strategy_id = params["strategy_id"]
         running = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status=ACTIVE_SESSION_STATUSES)
-        listings = set(_listings(data))
+        listings = set(_listings(data["legs"]))
         targets = [s.session_id for s in running or [] if listing_ids(s.config.get("listings", [])) & listings]
         if not targets:
             return NoMatch("no running session of the strategy holds these listings")
         return ShutdownEvaluation(should_shutdown=True, target_session_ids=targets,
-                                  reason=f"CS2 match {data['match_id']} on {data['venue']} has started or gone")
+                                  reason=f"CS2 match {data['match_id']} has started or gone")

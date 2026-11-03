@@ -3,21 +3,22 @@ Each time a cs2_upcoming run succeeds: turn gnome-pipelines' cs2_upcoming_matche
 shutdown triggers. gnome-pipelines' runner announces the run on the default EventBridge bus; the event
 itself carries nothing this needs, since the table holds every match's newest state.
 
-cs2_upcoming tracks a BO3 from 12 hours before its HLTV kickoff and writes a row per match each run:
-its HLTV status (upcoming, live, then missing once it leaves HLTV's listing) and, once a venue's
-series market is in the registry, a leg per venue and market with the two team listings. For the
-newest row of each match:
+cs2_upcoming writes a row per tracked BO3 each run: its HLTV status (upcoming, live, then missing once
+it leaves HLTV's listing) and, once a venue's market is in the registry, a leg per venue and market with
+the two team listings. For the newest row of each match, one trigger per market holding every venue's
+leg, since one session trades the match wherever it is listed:
 
-- launch, per leg, while HLTV still lists it upcoming, kickoff is under LAUNCH_LEAD away but more than
+- launch while HLTV still lists it upcoming, kickoff is under LAUNCH_LEAD away but more than
   LAUNCH_CUTOFF away, and the row is fresh (a stalled pipeline would otherwise keep launching sessions
   onto a frozen feed);
-- shut down, per leg, once HLTV lists it missing (it has left the listing: finished, or dropped), or
-  SHUTDOWN_AFTER past kickoff. The session ends itself at its entry cutoff, so these only catch one
-  that didn't.
+- shut down once HLTV lists it missing (it has left the listing: finished, or dropped), or
+  SHUTDOWN_AFTER past kickoff. The session ends itself at kickoff, so these only catch one that didn't.
 
 Each scan resends the same triggers; the launcher's dedup and its active-session check make the
-repeats no-ops, and a session that died before the cutoff is relaunched by a later scan. A launch
-trigger's deadline is the cutoff, so a request still awaiting approval then can't launch; a moved
+repeats no-ops, and a session that died before the cutoff is relaunched by a later scan. Legs are sorted
+by venue so the same legs are always the same trigger. A venue listed after the session launched makes a
+new trigger, which the active-session check blocks: the running session holds the match's other listings.
+A launch trigger's deadline is the cutoff, so a request still awaiting approval then can't launch; a moved
 kickoff moves it. Past the cutoff nothing launches, which is also what keeps a session that ended there
 from being started again.
 """
@@ -41,14 +42,14 @@ MATCHES = "cs2_upcoming_matches"
 RULE_TYPE = "cs2"
 UPCOMING = "upcoming"
 MISSING = "missing"
-# Matches are tracked from 12h out; the hour of slack covers a run that lands just before the window.
-LAUNCH_LEAD = pd.Timedelta(hours=13)
-# cs2_series stops trading and ends this long before kickoff (its entry_cutoff_hours); a session launched
-# later could never trade.
-LAUNCH_CUTOFF = pd.Timedelta(hours=3)
-# The strategy exits on its own once the match ends, or 8h after kickoff if the pipeline stalls; this frees
-# the instance if it doesn't.
-SHUTDOWN_AFTER = pd.Timedelta(hours=9)
+# cs2_series trades the last hour before kickoff; launching an hour earlier leaves time for the instance to boot
+# and a missed scan or two.
+LAUNCH_LEAD = pd.Timedelta(hours=2)
+# The instance takes minutes to boot, and cs2_series ends itself at kickoff; a session launched later could
+# hardly trade.
+LAUNCH_CUTOFF = pd.Timedelta(minutes=10)
+# The strategy exits on its own at kickoff, even if the pipeline stalls; this frees the instance if it doesn't.
+SHUTDOWN_AFTER = pd.Timedelta(hours=1)
 # cs2_upcoming runs every 15 minutes; a newest row older than this means it had stalled before this run.
 FRESH = pd.Timedelta(hours=1)
 # Rows newer than this cover every match still worth a trigger: tracked matches get a row every run.
@@ -60,8 +61,8 @@ def latest(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, str | None]]:
-    """("launch" | "shutdown", trigger data, deadline) for each leg of each match's newest row; a launch's deadline
-    is the entry cutoff, a shutdown has none."""
+    """("launch" | "shutdown", trigger data, deadline) for each market of each match's newest row, with every venue's
+    leg; a launch's deadline is the cutoff, a shutdown has none."""
     out = []
     for m in matches.itertuples():
         kickoff = pd.Timestamp(m.kickoff)
@@ -73,11 +74,15 @@ def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, 
             action = "shutdown"
         else:
             continue
+        by_market: dict[str, list[dict]] = {}
         for leg in json.loads(m.markets or "[]"):
-            out.append((action, {
-                "match_id": int(m.match_id), "venue": leg["venue"], "market": leg["market"],
-                "listing_team_a": int(leg["listing_team_a"]), "listing_team_b": int(leg["listing_team_b"]),
-            }, (kickoff - LAUNCH_CUTOFF).isoformat() if action == "launch" else None))
+            by_market.setdefault(leg["market"], []).append({
+                "venue": leg["venue"], "listing_team_a": int(leg["listing_team_a"]),
+                "listing_team_b": int(leg["listing_team_b"])})
+        for market, legs in by_market.items():
+            out.append((action, {"match_id": int(m.match_id), "market": market,
+                                 "legs": sorted(legs, key=lambda leg: leg["venue"])},
+                        (kickoff - LAUNCH_CUTOFF).isoformat() if action == "launch" else None))
     return out
 
 

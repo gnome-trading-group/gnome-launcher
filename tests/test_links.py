@@ -12,7 +12,7 @@ from tests.conftest import STRATEGY
 from tests.test_tracking import api
 
 CONTROLLER = "https://controller.gnometrading.group"
-CS2 = {"match_id": 2399544, "venue": "polymarket", "market": "series", "listing_team_a": 11, "listing_team_b": 12}
+CS2 = {"match_id": 2399544, "market": "series", "legs": [{"venue": "polymarket", "listing_team_a": 11, "listing_team_b": 12}]}
 
 
 @pytest.fixture
