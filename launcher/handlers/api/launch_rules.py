@@ -108,7 +108,8 @@ def _edit(rule: dict, body: dict | None, who: str, dynamo: DynamoClient):
 
 
 def _save(rule: dict, changes: dict, who: str, dynamo: DynamoClient):
-    updated = {**rule, **changes}
+    # A rule saved before a field existed takes its default, so the first edit after a new field doesn't fail.
+    updated = {**RULE_DEFAULTS, **rule, **changes}
     problems = validate_rule({k: v for k, v in updated.items() if k not in STORED_FIELDS})
     if problems:
         return error(400, "Invalid rule", problems)

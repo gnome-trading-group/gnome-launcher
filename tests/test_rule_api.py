@@ -62,6 +62,17 @@ def test_an_edit_is_validated_as_the_whole_rule(aws):
     assert call("GET", rule_id=created["rule_id"])[1]["cooldown_minutes"] == 15
 
 
+def test_a_rule_saved_before_quiet_existed_can_still_be_edited(aws):
+    _, created = call("POST", CS2_RULE)
+    assert created["quiet"] is False
+    table = boto3.resource("dynamodb").Table(launch_rules.DynamoClient()._rules.name)
+    table.update_item(Key={"rule_id": created["rule_id"]}, UpdateExpression="REMOVE quiet")
+
+    status, edited = call("PATCH", {"cooldown_minutes": 5}, created["rule_id"])
+
+    assert status == 200 and edited["quiet"] is False
+
+
 def test_deleting_a_rule_archives_it(aws):
     _, created = call("POST", CS2_RULE)
 

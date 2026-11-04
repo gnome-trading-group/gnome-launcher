@@ -17,6 +17,11 @@ def _actor(rule_name: str) -> str:
     return f"launcher:{rule_name}"
 
 
+def _labels(rule_name: str, quiet: bool, **extra: str) -> dict[str, str]:
+    # The registry records a silent INFO alert without posting it anywhere.
+    return {"rule": rule_name, **extra, **({"route": "silent"} if quiet else {})}
+
+
 def describe(error: Exception) -> str:
     # The registry says why it refused a launch (a missing risk policy, a stale balance, no active account) in the body.
     if isinstance(error, requests.HTTPError) and error.response is not None:
@@ -31,12 +36,13 @@ def _send(registry: RegistryClient, alert_type: str, title: str, **fields) -> No
         logger.warning("Couldn't report %s: %s", alert_type, title, exc_info=True)
 
 
-def launched(registry: RegistryClient, rule_name: str, reason: str, config: ResolvedStrategyConfig, session_id: str) -> None:
+def launched(registry: RegistryClient, rule_name: str, reason: str, config: ResolvedStrategyConfig, session_id: str,
+             *, quiet: bool) -> None:
     _send(
         registry, "LAUNCH_SUCCEEDED", f"{rule_name} launched {config.strategy_class}",
         key=f"LAUNCH_SUCCEEDED:{session_id}", body=reason, actor=_actor(rule_name),
         strategy_id=config.strategy_id, session_id=session_id, mode=config.mode,
-        labels={"rule": rule_name, "listings": ", ".join(str(x) for x in config.listings)},
+        labels=_labels(rule_name, quiet, listings=", ".join(str(x) for x in config.listings)),
     )
 
 
@@ -50,12 +56,12 @@ def launch_failed(registry: RegistryClient, rule_name: str, key: str, error: Exc
     )
 
 
-def stopped(registry: RegistryClient, rule_name: str, reason: str, session_ids: list[str]) -> None:
+def stopped(registry: RegistryClient, rule_name: str, reason: str, session_ids: list[str], *, quiet: bool) -> None:
     for session_id in session_ids:
         _send(
             registry, "SESSION_STOPPED_AUTO", f"{rule_name} stopped {session_id}",
             key=f"SESSION_STOPPED_AUTO:{session_id}", body=reason, actor=_actor(rule_name), session_id=session_id,
-            labels={"rule": rule_name},
+            labels=_labels(rule_name, quiet),
         )
 
 

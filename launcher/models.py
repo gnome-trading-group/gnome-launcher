@@ -85,6 +85,7 @@ class LaunchRule(TypedDict):
     max_concurrent_sessions: int | None
     cooldown_minutes: int
     dedup_window_minutes: int
+    quiet: bool
     parameters: dict
     revision: int
     created_by: str

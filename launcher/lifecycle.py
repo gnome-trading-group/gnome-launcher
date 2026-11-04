@@ -131,6 +131,7 @@ def launch(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str
     called, so a launch that times out after the registry made the session still leads to it."""
     request_id = request["request_id"]
     config = ResolvedStrategyConfig(**request["resolved_config"])
+    quiet = _is_quiet(ctx, request)
     session_id = str(uuid.uuid4())
     ctx.dynamo.annotate(request_id, session_id=session_id)
     try:
@@ -149,7 +150,7 @@ def launch(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str
                        request_id, session_id, session.status, exc_info=True)
     launched = ctx.dynamo.transition(request_id, "LAUNCHING", "LAUNCHED", actor, note=f"session {session_id}",
                                      tracking=TRACKING_OPEN, session_status="SUBMITTED")
-    alerts.launched(ctx.registry, rule_name, reason, config, session_id)
+    alerts.launched(ctx.registry, rule_name, reason, config, session_id, quiet=quiet)
     return launched
 
 
@@ -163,6 +164,7 @@ def fail(ctx: RuleContext, request: LaunchRequest, expected: str, rule_name: str
 
 def stop(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str, actor: str) -> LaunchRequest | None:
     """Stops the sessions of a request already STOPPING. `reason` is recorded on each session as why it stopped."""
+    quiet = _is_quiet(ctx, request)
     errors = []
     for session_id in request.get("target_session_ids") or []:
         try:
@@ -174,7 +176,7 @@ def stop(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str, 
         alerts.shutdown_failed(ctx.registry, rule_name, errors)
         return ctx.dynamo.transition(request["request_id"], "STOPPING", "STOP_FAILED", actor,
                                      note=f"{len(errors)} session(s) didn't stop", launch_error=json.dumps(errors))
-    alerts.stopped(ctx.registry, rule_name, reason, request.get("target_session_ids") or [])
+    alerts.stopped(ctx.registry, rule_name, reason, request.get("target_session_ids") or [], quiet=quiet)
     return ctx.dynamo.transition(request["request_id"], "STOPPING", "STOPPED", actor, note=reason)
 
 
@@ -226,6 +228,17 @@ def _lookup(ctx: RuleContext, session_id: str):
     except Exception:
         logger.warning("Couldn't look up session %s after a failed launch", session_id, exc_info=True)
         return None
+
+
+def _is_quiet(ctx: RuleContext, request: LaunchRequest) -> bool:
+    # Read when it acts, so quieting a rule also quiets the requests it already has waiting. A preference that can't be
+    # read mustn't stop a launch, so it falls back to being heard.
+    try:
+        rule = ctx.dynamo.get_rule(request["matched_rule_id"])
+    except Exception:
+        logger.warning("Couldn't read rule %s; reporting as usual", request["matched_rule_id"], exc_info=True)
+        return False
+    return bool(rule and rule.get("quiet"))
 
 
 def _failure_key(request: LaunchRequest) -> str:

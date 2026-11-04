@@ -83,5 +83,8 @@ gnome-launcher decides when to launch and stop strategy sessions. Triggers come 
   - `SESSION_STOPPED_AUTO`: a rule stopped a session it launched.
   - `SHUTDOWN_FAILED`: the registry stop call failed for a session (one alert per session; the request becomes STOP_FAILED). Stop the session by hand if needed.
   - A STOPPING request the sweeper finds stuck becomes STOP_FAILED with no alert.
+  - A rule with `quiet: true` sends LAUNCH_SUCCEEDED and SESSION_STOPPED_AUTO labelled `route: silent`. The registry
+    records them on the Alerts page but posts them nowhere. Failures are never quiet. The flag is read from the rule
+    when the request acts, so quieting a rule also covers its waiting approvals and schedules.
 - Triage starting points: `GET /triggers?rule_type=` (trigger log), `GET /launch-requests/{id}` (request plus its trigger's log), `GET /launch-rules/{id}/activity`, `POST /launch-rules/{id}/dry-run`.
 - Runbooks: none in this repo.

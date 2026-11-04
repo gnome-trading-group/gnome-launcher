@@ -219,7 +219,7 @@ def make_rule(ctx):
         rule = {"name": "probe rule", "description": None, "rule_type": "probe", "status": "active",
                 "launch_path": "auto", "shutdown_path": "auto", "schedule_enabled": False,
                 "max_concurrent_sessions": None, "cooldown_minutes": 0, "dedup_window_minutes": 60,
-                "parameters": dict(STRATEGY)}
+                "quiet": False, "parameters": dict(STRATEGY)}
         return ctx.dynamo.create_rule({**rule, **overrides}, "ui:tester@example.com")
     return _make
 

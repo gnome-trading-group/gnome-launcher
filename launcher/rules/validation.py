@@ -17,9 +17,10 @@ RULE_DEFAULTS = {
     "max_concurrent_sessions": None,
     "cooldown_minutes": 0,
     "dedup_window_minutes": 60,
+    "quiet": False,
 }
 EDITABLE_FIELDS = ("name", "description", "status", "launch_path", "shutdown_path", "schedule_enabled",
-                   "max_concurrent_sessions", "cooldown_minutes", "dedup_window_minutes", "parameters")
+                   "max_concurrent_sessions", "cooldown_minutes", "dedup_window_minutes", "quiet", "parameters")
 
 RULE_SCHEMA = {
     "type": "object",
@@ -34,6 +35,8 @@ RULE_SCHEMA = {
         "max_concurrent_sessions": {"type": ["integer", "null"], "minimum": 1},
         "cooldown_minutes": {"type": "integer", "minimum": 0},
         "dedup_window_minutes": {"type": "integer", "minimum": 0},
+        # Its launches and stops are kept on the Alerts page but not posted; its failures always are.
+        "quiet": {"type": "boolean"},
         "parameters": {"type": "object"},
     },
     "required": ["name", "rule_type", "launch_path", "parameters", *RULE_DEFAULTS],

@@ -43,5 +43,5 @@ def test_alerting_failing_never_stops_the_launcher():
     registry = MagicMock()
     registry.send_alert.side_effect = RuntimeError("alerts API down")
 
-    alerts.stopped(registry, "cs2-prematch", "match over", ["a"])
-    alerts.launched(registry, "cs2-prematch", "pre-match window", _config(), "s1")
+    alerts.stopped(registry, "cs2-prematch", "match over", ["a"], quiet=False)
+    alerts.launched(registry, "cs2-prematch", "pre-match window", _config(), "s1", quiet=False)

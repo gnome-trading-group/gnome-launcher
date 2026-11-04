@@ -32,6 +32,42 @@ def test_an_auto_launch_records_its_session_and_timeline(ctx, make_rule):
     assert [a["type"] for a in ctx.registry.alerts] == ["LAUNCH_SUCCEEDED"]
 
 
+def routes(ctx, alert_type):
+    return [a["labels"].get("route") for a in ctx.registry.alerts if a["type"] == alert_type]
+
+
+def test_a_quiet_rules_launches_and_stops_are_reported_silently(ctx, make_rule):
+    make_rule(quiet=True)
+
+    trigger(ctx, [1])
+    shutdown_processor.process({"rule_type": "probe", "data": {"listings": [1]}}, ctx)
+
+    assert routes(ctx, "LAUNCH_SUCCEEDED") == ["silent"] and routes(ctx, "SESSION_STOPPED_AUTO") == ["silent"]
+
+
+def test_a_quiet_rules_failures_are_still_heard(ctx, make_rule):
+    make_rule(quiet=True)
+
+    def refuse(*_):
+        raise requests.HTTPError("409 Client Error")
+    ctx.registry.on_create = refuse
+    trigger(ctx, [1])
+
+    assert routes(ctx, "LAUNCH_FAILED") == [None]
+
+
+def test_quieting_a_rule_quiets_the_approval_it_already_has_waiting(ctx, make_rule, slack_click, run_async):
+    rule = make_rule(launch_path="approval")
+    trigger(ctx, [1])
+    [request] = requests_of(ctx, rule)
+    ctx.dynamo.replace_rule({**ctx.dynamo.get_rule(rule["rule_id"]), "quiet": True}, "ui:tester", ["quiet"])
+
+    slack_click("launch_approve", request["request_id"])
+    run_async(slack_click)
+
+    assert routes(ctx, "LAUNCH_SUCCEEDED") == ["silent"]
+
+
 def test_a_repeat_trigger_inside_the_window_does_nothing(ctx, make_rule):
     rule = make_rule()
     trigger(ctx, [1, 2])
