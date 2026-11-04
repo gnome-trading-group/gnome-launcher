@@ -173,6 +173,10 @@ class ClassifierEventRule(RuleType):
         event_ids = data["event_ids"]
         event_names = data["event_names"]
 
+        scheduled = self._scheduled_start(event_ids, ctx)
+        if scheduled is not None:
+            start, title = scheduled
+            return ScheduleResult(scheduled_time=start, reason=f"Scheduled start of {title}")
         if not event_names:
             return None
 
@@ -213,6 +217,22 @@ class ClassifierEventRule(RuleType):
         except Exception:
             logger.exception("Failed to extract schedule time for events %s", event_ids)
             return None
+
+    def _scheduled_start(self, event_ids: list[int], ctx: RuleContext) -> tuple[datetime, str] | None:
+        """The earliest future start the venues list for the events (the classifier keeps it current through
+        reschedules), or None when none of them has one; names and tickers only carry the original schedule."""
+        if not event_ids:
+            return None
+        now = datetime.now(timezone.utc)
+        found = []
+        for event in ctx.registry.get_event(event_ids=event_ids):
+            if not event.start_time:
+                continue
+            start = datetime.fromisoformat(event.start_time.replace("Z", "+00:00"))
+            start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+            if start > now:
+                found.append((start, event.title))
+        return min(found, default=None)
 
     def _listing_event_ids(self, listing_id: int, ctx: RuleContext) -> set[int]:
         return {

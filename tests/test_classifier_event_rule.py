@@ -1,5 +1,6 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from gnomepy.registry import ContractRelationship
 
@@ -191,3 +192,40 @@ def test_shutdown_no_match_when_no_session_holds_a_resolved_event():
     data = {"event_ids": [2], "event_names": ["Two"]}
     result = ClassifierEventRule().evaluate_shutdown(data, _base_params(), ctx)
     assert result.reason == "no running session holds the resolved events' listings"
+
+
+def _scheduled(event_id, start, title="TYLOO vs. Liquid"):
+    return [SimpleNamespace(event_id=event_id, title=title, start_time=start)]
+
+
+def test_the_schedule_is_the_earliest_upcoming_start_the_venues_list():
+    soon = datetime.now(timezone.utc) + timedelta(hours=2)
+    later = soon + timedelta(hours=3)
+    starts = {1: _scheduled(1, later.isoformat()), 2: _scheduled(2, soon.strftime("%Y-%m-%dT%H:%M:%S")),
+              3: _scheduled(3, None), 4: _scheduled(4, "2020-01-01T00:00:00")}
+    ctx = MagicMock()
+    ctx.registry.get_event.side_effect = lambda event_ids: [e for i in event_ids for e in starts[i]]
+    with patch("launcher.rules.classifier_event._get_anthropic_client") as llm:
+        result = ClassifierEventRule().compute_schedule_time({"event_ids": [1, 2, 3, 4], "event_names": ["x"]}, {}, ctx)
+    assert result.scheduled_time == soon.replace(microsecond=0) and "TYLOO" in result.reason
+    llm.assert_not_called()
+    ctx.registry.get_event.assert_called_once_with(event_ids=[1, 2, 3, 4])
+
+
+def test_every_event_of_a_large_batch_is_considered():
+    soon = datetime.now(timezone.utc) + timedelta(hours=1)
+    ctx = MagicMock()
+    ctx.registry.get_event.side_effect = lambda event_ids: [
+        SimpleNamespace(event_id=i, title=f"E{i}", start_time=soon.isoformat() if i == 40 else None) for i in event_ids]
+    result = ClassifierEventRule().compute_schedule_time({"event_ids": list(range(1, 51)), "event_names": ["x"]}, {}, ctx)
+    assert result.reason == "Scheduled start of E40"
+
+
+def test_without_a_listed_start_the_names_are_read_instead():
+    ctx = MagicMock()
+    ctx.registry.get_event.side_effect = lambda event_ids: [e for i in event_ids for e in _scheduled(i, None)]
+    with patch("launcher.rules.classifier_event._get_anthropic_client") as llm:
+        llm.return_value.messages.create.return_value = SimpleNamespace(
+            content=[SimpleNamespace(text='{"start_time": null}')])
+        assert ClassifierEventRule().compute_schedule_time({"event_ids": [1], "event_names": ["x"]}, {}, ctx) is None
+    llm.assert_called_once()
