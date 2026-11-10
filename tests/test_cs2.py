@@ -133,8 +133,8 @@ def test_scanner_shuts_down_missing_and_long_started_matches_but_leaves_live_one
         _row(4, "2026-10-15T23:30Z"),
     ])
 
-    assert [(a, d["match_id"], d["reason"], deadline) for a, d, deadline in triggers(rows, NOW)] == [
-        ("shutdown", 1, "gone", None), ("shutdown", 2, "past_kickoff", None)]
+    assert [(d["match_id"], d["reason"], deadline) for a, d, deadline in triggers(rows, NOW) if a == "shutdown"] == [
+        (1, "gone", None), (2, "past_kickoff", None)]
 
 
 def test_scanner_stops_a_finished_match_even_while_hltv_still_lists_it():
@@ -173,3 +173,34 @@ def test_a_default_rule_still_stops_an_hour_after_kickoff():
 
     assert evaluation.target_session_ids == ["a"]
     assert evaluation.reason == "CS2 match 2399262 started over an hour ago"
+
+
+def test_scanner_launches_live_matches_for_in_play_rules_and_still_flags_kickoff_passed():
+    rows = pd.DataFrame([
+        _row(1, "2026-10-15T23:30Z", status="live"),
+        _row(2, "2026-10-15T22:30Z", status="live"),
+        _row(3, "2026-10-15T22:30Z", status="live", generated_at="2026-10-15T22:30Z"),
+    ])
+
+    assert [(a, d["match_id"], d.get("phase"), d.get("reason"), deadline) for a, d, deadline in triggers(rows, NOW)] == [
+        ("launch", 1, "live", None, None),
+        ("launch", 2, "live", None, None), ("shutdown", 2, None, "past_kickoff", None),
+        ("shutdown", 3, None, "past_kickoff", None)]
+
+
+def test_a_live_trigger_is_not_the_pre_kickoff_trigger():
+    pre = triggers(pd.DataFrame([_row(1, "2026-10-16T01:30Z")]), NOW)[0][1]
+    live = triggers(pd.DataFrame([_row(1, "2026-10-15T23:50Z", status="live")]), NOW)[0][1]
+    assert dedup_key("cs2", "launch", pre) != dedup_key("cs2", "launch", live)
+
+
+def test_only_rules_that_launch_live_act_on_a_match_being_played():
+    live = {**_data(), "phase": "live"}
+    assert isinstance(CS2Rule().evaluate(live, _params(), _ctx()), NoMatch)
+    evaluation = CS2Rule().evaluate(live, _params(launch_live=True, stop_past_kickoff=False), _ctx())
+    assert evaluation.should_launch and evaluation.resolved_config.strategy_args["match_id"] == 2399262
+
+
+def test_launch_live_needs_sessions_that_outlive_kickoff():
+    assert CS2Rule().validate_parameters(_params(launch_live=True))
+    assert CS2Rule().validate_parameters(_params(launch_live=True, stop_past_kickoff=False)) == []

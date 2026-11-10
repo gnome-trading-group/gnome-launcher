@@ -11,6 +11,9 @@ leg, since one session trades the match wherever it is listed:
 - launch while HLTV still lists it upcoming, kickoff is under LAUNCH_LEAD away but more than
   LAUNCH_CUTOFF away, and the row is fresh (a stalled pipeline would otherwise keep launching sessions
   onto a frozen feed);
+- launch with phase "live" while HLTV lists it live and the row is fresh, for rules whose strategy trades
+  the match while it is played: a match it missed before kickoff (the pipeline was down, or HLTV listed it
+  late) is still picked up, and a session that died mid-match is restarted;
 - shut down once it is finished, once HLTV lists it missing (it has left the listing: finished, or dropped),
   or SHUTDOWN_AFTER past kickoff. cs2_series ends itself at kickoff, so for it these only catch a session
   that didn't. The trigger says which (`reason`): a rule whose strategy trades the match while it is played
@@ -43,6 +46,7 @@ logger = logging.getLogger(__name__)
 MATCHES = "cs2_upcoming_matches"
 RULE_TYPE = "cs2"
 UPCOMING = "upcoming"
+LIVE = "live"
 MISSING = "missing"
 FINISHED = "finished"
 # cs2_series trades the last hour before kickoff; launching an hour earlier leaves time for the instance to boot
@@ -70,15 +74,17 @@ def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, 
     out = []
     for m in matches.itertuples():
         kickoff = pd.Timestamp(m.kickoff)
-        if m.status == UPCOMING and now + LAUNCH_CUTOFF < kickoff <= now + LAUNCH_LEAD:
-            if now - pd.Timestamp(m.generated_at) > FRESH:
-                continue
-            action = "launch"
-        elif m.status in (FINISHED, MISSING) or now >= kickoff + SHUTDOWN_AFTER:
-            action = "shutdown"
-        else:
+        fresh = now - pd.Timestamp(m.generated_at) <= FRESH
+        actions: list[tuple[str, dict, str | None]] = []
+        if m.status == UPCOMING and now + LAUNCH_CUTOFF < kickoff <= now + LAUNCH_LEAD and fresh:
+            actions.append(("launch", {}, (kickoff - LAUNCH_CUTOFF).isoformat()))
+        if m.status == LIVE and fresh:
+            actions.append(("launch", {"phase": "live"}, None))
+        if m.status in (FINISHED, MISSING) or now >= kickoff + SHUTDOWN_AFTER:
+            reason = {FINISHED: FINISHED_REASON, MISSING: GONE}.get(m.status, PAST_KICKOFF)
+            actions.append(("shutdown", {"reason": reason}, None))
+        if not actions:
             continue
-        reason = {FINISHED: FINISHED_REASON, MISSING: GONE}.get(m.status, PAST_KICKOFF)
         by_market: dict[str, list[dict]] = {}
         for leg in json.loads(m.markets or "[]"):
             by_market.setdefault(leg["market"], []).append({
@@ -86,9 +92,7 @@ def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, 
                 "listing_team_b": int(leg["listing_team_b"])})
         for market, legs in by_market.items():
             data = {"match_id": int(m.match_id), "market": market, "legs": sorted(legs, key=lambda leg: leg["venue"])}
-            if action == "shutdown":
-                data["reason"] = reason
-            out.append((action, data, (kickoff - LAUNCH_CUTOFF).isoformat() if action == "launch" else None))
+            out += [(action, {**data, **extra}, deadline) for action, extra, deadline in actions]
     return out
 
 
