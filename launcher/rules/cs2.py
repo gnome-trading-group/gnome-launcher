@@ -12,7 +12,9 @@ gets the legs of those venues whose listings are in the registry. It pays each v
 listings, and in paper mode fills each listing as its exchange is recorded in the registry, under any of the
 rule's simulation overrides for that exchange. A rule whose strategy trades the match while it is played sets
 stop_past_kickoff false, and its sessions then stop only once the match is finished or gone; with launch_live it
-is also launched on a match already being played (phase "live" triggers), which no other rule acts on. Venues sit in different regions (Polymarket International in
+is also launched on a match already being played (phase "live" triggers), which no other rule acts on. Turning
+launch_before_kickoff off as well launches only once HLTV lists the match live: a cross-venue position taken before
+play isn't hedged against a match that is never played, which the venues settle differently. Venues sit in different regions (Polymarket International in
 eu-west-1, Kalshi and Polymarket US in us-east-1) and the registry places a session only by a region it is given
 or one its listings share, so the session is placed in HOME_VENUE's region whenever it trades there.
 """
@@ -103,6 +105,9 @@ class CS2Rule(RuleType):
                        "description": "The market this rule's strategy trades"},
             "venues": {"type": "array", "items": {"type": "string", "enum": list(VENUES)},
                        "default": list(VENUES), "description": "Venues to launch on"},
+            "launch_before_kickoff": {"type": "boolean", "default": True,
+                                      "description": "Launch in the hours before kickoff; false waits for the match "
+                                                     "to be live (needs launch_live)"},
             "launch_live": {"type": "boolean", "default": False,
                             "description": "Also launch on matches already being played; needs stop_past_kickoff "
                                            "false, or a session launched an hour after kickoff is stopped at once"},
@@ -115,13 +120,18 @@ class CS2Rule(RuleType):
     }
 
     def validate_parameters(self, params: dict) -> list[str]:
+        problems = []
         if params.get("launch_live") and params.get("stop_past_kickoff", True):
-            return ["launch_live needs stop_past_kickoff false: its sessions would be stopped as they launch"]
-        return []
+            problems.append("launch_live needs stop_past_kickoff false: its sessions would be stopped as they launch")
+        if not params.get("launch_before_kickoff", True) and not params.get("launch_live"):
+            problems.append("launch_before_kickoff false needs launch_live: the rule would never launch")
+        return problems
 
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
         if data.get("phase") == "live" and not params.get("launch_live", False):
             return NoMatch("this rule launches before kickoff only, and the match is being played")
+        if data.get("phase") != "live" and not params.get("launch_before_kickoff", True):
+            return NoMatch("this rule launches once the match is being played, and it hasn't started")
         market = data["market"]
         if market != params.get("market", DEFAULT_MARKET):
             return NoMatch(f"this rule trades the {params.get('market', DEFAULT_MARKET)} market, not {market}")

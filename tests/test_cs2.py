@@ -204,3 +204,11 @@ def test_only_rules_that_launch_live_act_on_a_match_being_played():
 def test_launch_live_needs_sessions_that_outlive_kickoff():
     assert CS2Rule().validate_parameters(_params(launch_live=True))
     assert CS2Rule().validate_parameters(_params(launch_live=True, stop_past_kickoff=False)) == []
+
+
+def test_a_rule_can_wait_for_the_match_to_start():
+    params = _params(launch_before_kickoff=False, launch_live=True, stop_past_kickoff=False)
+    assert isinstance(CS2Rule().evaluate(_data(), params, _ctx()), NoMatch)
+    assert CS2Rule().evaluate({**_data(), "phase": "live"}, params, _ctx()).should_launch
+    assert CS2Rule().validate_parameters(params) == []
+    assert CS2Rule().validate_parameters(_params(launch_before_kickoff=False)), "it would never launch"
