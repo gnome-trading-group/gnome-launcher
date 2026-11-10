@@ -133,8 +133,20 @@ def test_scanner_shuts_down_missing_and_long_started_matches_but_leaves_live_one
         _row(4, "2026-10-15T23:30Z"),
     ])
 
-    assert [(a, d["match_id"], deadline) for a, d, deadline in triggers(rows, NOW)] == [
-        ("shutdown", 1, None), ("shutdown", 2, None)]
+    assert [(a, d["match_id"], d["reason"], deadline) for a, d, deadline in triggers(rows, NOW)] == [
+        ("shutdown", 1, "gone", None), ("shutdown", 2, "past_kickoff", None)]
+
+
+def test_scanner_stops_a_finished_match_even_while_hltv_still_lists_it():
+    rows = pd.DataFrame([_row(1, "2026-10-15T22:00Z", status="finished"),
+                         _row(2, "2026-10-15T23:45Z", status="finished")])
+
+    assert [(a, d["match_id"], d["reason"]) for a, d, _ in triggers(rows, NOW)] == [
+        ("shutdown", 1, "finished"), ("shutdown", 2, "finished")]
+
+
+def test_launch_triggers_carry_no_reason():
+    assert "reason" not in triggers(pd.DataFrame([_row(1, "2026-10-16T01:30Z")]), NOW)[0][1]
 
 
 def test_scanner_reads_each_matchs_newest_row():
@@ -144,3 +156,20 @@ def test_scanner_reads_each_matchs_newest_row():
     ])
 
     assert latest(rows).status.tolist() == ["live"]
+
+
+def test_a_rule_trading_the_match_in_play_ignores_the_hour_after_kickoff_but_not_the_end():
+    sessions = [SimpleNamespace(session_id="a", config={"listings": [11, 12]})]
+    rule, params, ctx = CS2Rule(), _params(stop_past_kickoff=False), _ctx(sessions=sessions)
+
+    assert isinstance(rule.evaluate_shutdown({**_data(), "reason": "past_kickoff"}, params, ctx), NoMatch)
+    for reason in ("finished", "gone"):
+        assert rule.evaluate_shutdown({**_data(), "reason": reason}, params, ctx).target_session_ids == ["a"]
+
+
+def test_a_default_rule_still_stops_an_hour_after_kickoff():
+    sessions = [SimpleNamespace(session_id="a", config={"listings": [11, 12]})]
+    evaluation = CS2Rule().evaluate_shutdown({**_data(), "reason": "past_kickoff"}, _params(), _ctx(sessions=sessions))
+
+    assert evaluation.target_session_ids == ["a"]
+    assert evaluation.reason == "CS2 match 2399262 started over an hour ago"

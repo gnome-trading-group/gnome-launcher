@@ -4,15 +4,17 @@ shutdown triggers. gnome-pipelines' runner announces the run on the default Even
 itself carries nothing this needs, since the table holds every match's newest state.
 
 cs2_upcoming writes a row per tracked BO3 each run: its HLTV status (upcoming, live, then missing once
-it leaves HLTV's listing) and, once a venue's market is in the registry, a leg per venue and market with
+it leaves HLTV's listing, or finished once a venue has paid out its series market) and, once a venue's market is in the registry, a leg per venue and market with
 the two team listings. For the newest row of each match, one trigger per market holding every venue's
 leg, since one session trades the match wherever it is listed:
 
 - launch while HLTV still lists it upcoming, kickoff is under LAUNCH_LEAD away but more than
   LAUNCH_CUTOFF away, and the row is fresh (a stalled pipeline would otherwise keep launching sessions
   onto a frozen feed);
-- shut down once HLTV lists it missing (it has left the listing: finished, or dropped), or
-  SHUTDOWN_AFTER past kickoff. The session ends itself at kickoff, so these only catch one that didn't.
+- shut down once it is finished, once HLTV lists it missing (it has left the listing: finished, or dropped),
+  or SHUTDOWN_AFTER past kickoff. cs2_series ends itself at kickoff, so for it these only catch a session
+  that didn't. The trigger says which (`reason`): a rule whose strategy trades the match while it is played
+  ignores PAST_KICKOFF and stops on FINISHED or GONE.
 
 Each scan resends the same triggers; the launcher's dedup and its active-session check make the
 repeats no-ops, and a session that died before the cutoff is relaunched by a later scan. Legs are sorted
@@ -42,6 +44,7 @@ MATCHES = "cs2_upcoming_matches"
 RULE_TYPE = "cs2"
 UPCOMING = "upcoming"
 MISSING = "missing"
+FINISHED = "finished"
 # cs2_series trades the last hour before kickoff; launching an hour earlier leaves time for the instance to boot
 # and a missed scan or two.
 LAUNCH_LEAD = pd.Timedelta(hours=2)
@@ -52,6 +55,7 @@ LAUNCH_CUTOFF = pd.Timedelta(minutes=10)
 SHUTDOWN_AFTER = pd.Timedelta(hours=1)
 # cs2_upcoming runs every 15 minutes; a newest row older than this means it had stalled before this run.
 FRESH = pd.Timedelta(hours=1)
+FINISHED_REASON, GONE, PAST_KICKOFF = "finished", "gone", "past_kickoff"
 # Rows newer than this cover every match still worth a trigger: tracked matches get a row every run.
 LOOKBACK = pd.Timedelta(hours=36)
 
@@ -70,19 +74,21 @@ def triggers(matches: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict, 
             if now - pd.Timestamp(m.generated_at) > FRESH:
                 continue
             action = "launch"
-        elif m.status == MISSING or now >= kickoff + SHUTDOWN_AFTER:
+        elif m.status in (FINISHED, MISSING) or now >= kickoff + SHUTDOWN_AFTER:
             action = "shutdown"
         else:
             continue
+        reason = {FINISHED: FINISHED_REASON, MISSING: GONE}.get(m.status, PAST_KICKOFF)
         by_market: dict[str, list[dict]] = {}
         for leg in json.loads(m.markets or "[]"):
             by_market.setdefault(leg["market"], []).append({
                 "venue": leg["venue"], "listing_team_a": int(leg["listing_team_a"]),
                 "listing_team_b": int(leg["listing_team_b"])})
         for market, legs in by_market.items():
-            out.append((action, {"match_id": int(m.match_id), "market": market,
-                                 "legs": sorted(legs, key=lambda leg: leg["venue"])},
-                        (kickoff - LAUNCH_CUTOFF).isoformat() if action == "launch" else None))
+            data = {"match_id": int(m.match_id), "market": market, "legs": sorted(legs, key=lambda leg: leg["venue"])}
+            if action == "shutdown":
+                data["reason"] = reason
+            out.append((action, data, (kickoff - LAUNCH_CUTOFF).isoformat() if action == "launch" else None))
     return out
 
 

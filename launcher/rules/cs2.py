@@ -10,7 +10,8 @@ check recognise every later scan as a repeat.
 A rule trades one market (series now; map markets are a later strategy) on the venues it names; the session
 gets the legs of those venues whose listings are in the registry. It pays each venue's taker fee on that venue's
 listings, and in paper mode fills each listing as its exchange is recorded in the registry, under any of the
-rule's simulation overrides for that exchange. Venues sit in different regions (Polymarket International in
+rule's simulation overrides for that exchange. A rule whose strategy trades the match while it is played sets
+stop_past_kickoff false, and its sessions then stop only once the match is finished or gone. Venues sit in different regions (Polymarket International in
 eu-west-1, Kalshi and Polymarket US in us-east-1) and the registry places a session only by a region it is given
 or one its listings share, so the session is placed in HOME_VENUE's region whenever it trades there.
 """
@@ -40,6 +41,8 @@ HOME_VENUE = "polymarket"
 # HLTV ignores the slug but needs one: /matches/<id>/ alone serves the home page.
 HLTV_MATCH_URL = "https://www.hltv.org/matches/{match_id}/match"
 MARKETS = ("series", "game1")
+SHUTDOWN_REASONS = {"finished": "is over", "gone": "has left HLTV's listing",
+                    "past_kickoff": "started over an hour ago"}
 DEFAULT_MARKET = "series"
 
 
@@ -83,6 +86,9 @@ class CS2Rule(RuleType):
                     "required": ["venue", "listing_team_a", "listing_team_b"],
                 },
             },
+            "reason": {"type": "string", "enum": ["finished", "gone", "past_kickoff"],
+                       "description": "shutdown triggers: a venue paid out the series, the match left HLTV's "
+                                      "listing, or kickoff was over an hour ago"},
         },
         "required": ["match_id", "market", "legs"],
     }
@@ -94,6 +100,9 @@ class CS2Rule(RuleType):
                        "description": "The market this rule's strategy trades"},
             "venues": {"type": "array", "items": {"type": "string", "enum": list(VENUES)},
                        "default": list(VENUES), "description": "Venues to launch on"},
+            "stop_past_kickoff": {"type": "boolean", "default": True,
+                                  "description": "Stop sessions an hour after kickoff; false keeps them until the "
+                                                 "match is over, for strategies that trade it while it is played"},
             **STRATEGY_PARAMS_SCHEMA,
         },
         "required": STRATEGY_REQUIRED_PARAMS,
@@ -132,6 +141,8 @@ class CS2Rule(RuleType):
     def evaluate_shutdown(self, data: dict, params: dict, ctx: RuleContext) -> ShutdownEvaluation | NoMatch:
         if data["market"] != params.get("market", DEFAULT_MARKET):
             return NoMatch(f"this rule trades the {params.get('market', DEFAULT_MARKET)} market, not {data['market']}")
+        if data.get("reason") == "past_kickoff" and not params.get("stop_past_kickoff", True):
+            return NoMatch("this rule's sessions trade the match while it is played; they stop once it is over")
         strategy_id = params["strategy_id"]
         running = ctx.registry.get_strategy_sessions(strategy_id=strategy_id, status=ACTIVE_SESSION_STATUSES)
         listings = set(_listings(data["legs"]))
@@ -139,4 +150,5 @@ class CS2Rule(RuleType):
         if not targets:
             return NoMatch("no running session of the strategy holds these listings")
         return ShutdownEvaluation(should_shutdown=True, target_session_ids=targets,
-                                  reason=f"CS2 match {data['match_id']} has started or gone")
+                                  reason=f"CS2 match {data['match_id']} " + SHUTDOWN_REASONS.get(
+                                      data.get("reason"), "has started or gone"))
