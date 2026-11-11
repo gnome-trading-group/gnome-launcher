@@ -200,6 +200,18 @@ def test_a_match_past_its_run_is_still_scanned_so_its_stop_is_sent():
     assert datetime.fromisoformat(start_from) < START, "the scan reads far enough back to still see the match"
 
 
+def test_a_venue_that_resolved_the_match_stops_it_though_its_listings_are_retired():
+    registry = _registry()
+    events = registry.get_event.side_effect
+    registry.get_event.side_effect = lambda tags, **kw: [
+        SimpleNamespace(**{**vars(e), "resolved": e.event_id == 2}) for e in events(tags, **kw)]
+    registry.get_listing.side_effect = lambda security_id: [
+        SimpleNamespace(listing_id=LISTINGS[security_id], active=security_id not in (21, 22))]
+    ((action, data, _),) = scan(registry, NOW)
+    assert action == "shutdown" and data["reason"] == "resolved"
+    assert [leg["venue"] for leg in data["legs"]] == ["kalshi", "polymarket", "polymarket_us"]
+
+
 def test_an_inactive_listing_is_no_leg():
     registry = _registry()
     registry.get_listing.side_effect = lambda security_id: [

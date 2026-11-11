@@ -220,12 +220,14 @@ def scan(registry: RegistryClient, now: datetime) -> list[tuple[str, dict, str |
         by_subject[w.subject_id].append(w)
 
     def one(subject_id: int) -> list[tuple[str, dict, str | None]]:
-        listings = {}
+        listings, active = {}, set()
         for w in by_subject[subject_id]:
-            found = [x for x in registry.get_listing(security_id=w.security_id) or [] if getattr(x, "active", True)]
+            found = registry.get_listing(security_id=w.security_id) or []
             if found:
-                listings[w.security_id] = found[0].listing_id
-        # Only contracts a session can trade: a venue whose listing isn't registered can't anchor or be a leg.
+                live = [x for x in found if getattr(x, "active", True)]
+                listings[w.security_id] = (live or found)[0].listing_id
+                if live:
+                    active.add(w.security_id)
         ws = [w for w in by_subject[subject_id] if w.security_id in listings]
         if not ws:
             return []
@@ -242,8 +244,10 @@ def scan(registry: RegistryClient, now: datetime) -> list[tuple[str, dict, str |
                             key=lambda leg: (ANCHORS.index(leg.venue) if leg.venue in ANCHORS else len(ANCHORS)))
         if not every_pair:
             return []
+        # Whether the match is over is read from every venue, listings retired or not: a venue that resolved it has
+        # retired them. Only the legs a session would trade must be active.
         stopping = shutdown_reason(every_pair, now) is not None
-        legs, notes = match_legs(ws, events, edges, complements)
+        legs, notes = match_legs([w for w in ws if w.security_id in active], events, edges, complements)
         if not stopping:
             for note in notes:
                 logger.info("subject %d: %s", subject_id, note)
