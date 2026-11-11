@@ -349,12 +349,41 @@ export class LauncherStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(cs2ScannerFn, { retryAttempts: 0 })],
     });
 
+    // ── Game Scanner Lambda ───────────────────────────────────────────────
+
+    // Reads the registry's esports matches (CS2, Dota 2, Valorant) every 2 minutes and queues esports_game launch and
+    // shutdown triggers. Rules launch up to 30 minutes before a match; at a 2-minute cadence a launch lands within 2
+    // minutes of its rule's lead.
+    const gameScannerFn = createLambda(
+      'GameScanner',
+      'launcher.handlers.custom.game_scanner.handler',
+      cdk.Duration.minutes(2),
+      512,
+      {
+        LAUNCHER_QUEUE_URL: launcherQueue.queueUrl,
+        SHUTDOWN_QUEUE_URL: shutdownQueue.queueUrl,
+      },
+      (fn) => {
+        launcherQueue.grantSendMessages(fn);
+        shutdownQueue.grantSendMessages(fn);
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['apigateway:GET'],
+          resources: [registryApiKeyArn],
+        }));
+      },
+    );
+    new events.Rule(this, 'GameScannerSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(2)),
+      targets: [new targets.LambdaFunction(gameScannerFn, { retryAttempts: 0 })],
+    });
+
     this.processors = [
       { name: 'TriggerProcessor', fn: triggerProcessorFn },
       { name: 'ShutdownProcessor', fn: shutdownProcessorFn },
       { name: 'ScheduledLaunch', fn: scheduledLaunchFn },
       { name: 'ClassifierAdapter', fn: classifierAdapterFn },
       { name: 'Cs2Scanner', fn: cs2ScannerFn },
+      { name: 'GameScanner', fn: gameScannerFn },
     ];
 
     // ── API Trigger Lambda ────────────────────────────────────────────────
