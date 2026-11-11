@@ -319,3 +319,13 @@ def test_links_to_the_venues_event_pages():
     assert [link["url"] for link in EsportsGameRule().links(_data())] == [
         "https://polymarket.com/event/dota2-pari-konca-2026-11-12",
         "https://kalshi.com/markets/kxdota2game/kxdota2game-26nov121100koncapari"]
+
+
+def test_league_of_legends_matches_are_scanned_by_their_tag():
+    registry = _registry()
+    events = registry.get_event.side_effect
+    registry.get_event.side_effect = lambda tags, **kw: events(["dota 2"], **kw) if tags == ["league of legends"] else []
+    ((action, data, _),) = scan(registry, NOW)
+    assert action == "launch" and data["league"] == "lol"
+    rule_data = {**_data(), "league": "lol"}
+    assert not isinstance(EsportsGameRule().evaluate(rule_data, _params(), _ctx(), now=NOW), NoMatch)

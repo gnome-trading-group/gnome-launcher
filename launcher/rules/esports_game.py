@@ -1,5 +1,5 @@
 """
-One session per esports match (CS2, Dota 2, Valorant), holding every venue's two team listings for it, triggered by
+One session per esports match (CS2, Dota 2, Valorant, League of Legends), holding every venue's two team listings for it, triggered by
 the game_scanner Lambda from the registry: the classifier joins each match across venues into one proposition
 subject, and the scanner picks each venue's pair of team contracts by the relationships stored between them.
 
@@ -40,7 +40,7 @@ from launcher.sessions import ACTIVE_SESSION_STATUSES, listing_ids
 
 logger = logging.getLogger(__name__)
 
-LEAGUES = ("cs2", "dota2", "valorant")
+LEAGUES = ("cs2", "dota2", "valorant", "lol")
 VENUES = ("polymarket", "kalshi", "polymarket_us")
 MARKETS = ("match",)
 HOME_VENUE = "polymarket"

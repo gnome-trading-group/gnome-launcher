@@ -1,5 +1,6 @@
 """
-Every few minutes: turn the registry's esports matches into esports_game launch and shutdown triggers.
+Every few minutes: turn the registry's esports matches (CS2, Dota 2, Valorant, League of Legends) into esports_game
+launch and shutdown triggers.
 
 The classifier reads every venue's match-winner contracts into propositions and joins one match across venues into
 one canonical subject (its merge pass and key aliases), deriving EQUIVALENT relationships between the contracts that
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 RULE_TYPE = "esports_game"
 # League -> the tag the classifier gives its events.
-LEAGUES = {"cs2": "cs2", "dota2": "dota 2", "valorant": "valorant"}
+LEAGUES = {"cs2": "cs2", "dota2": "dota 2", "valorant": "valorant", "lol": "league of legends"}
 VENUES = {"POLYMARKET_INTL": "polymarket", "KALSHI": "kalshi", "POLYMARKET_US": "polymarket_us"}
 ANCHORS = ("polymarket", "kalshi")
 MARKET = "match"

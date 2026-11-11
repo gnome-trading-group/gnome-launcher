@@ -351,7 +351,7 @@ export class LauncherStack extends cdk.Stack {
 
     // ── Game Scanner Lambda ───────────────────────────────────────────────
 
-    // Reads the registry's esports matches (CS2, Dota 2, Valorant) every 2 minutes and queues esports_game launch and
+    // Reads the registry's esports matches (CS2, Dota 2, Valorant, League of Legends) every 2 minutes and queues esports_game launch and
     // shutdown triggers. Rules launch up to 30 minutes before a match; at a 2-minute cadence a launch lands within 2
     // minutes of its rule's lead.
     const gameScannerFn = createLambda(
