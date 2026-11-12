@@ -220,6 +220,33 @@ def test_an_inactive_listing_is_no_leg():
     assert [leg["venue"] for leg in data["legs"]] == ["kalshi", "polymarket"]
 
 
+def _moved(registry, starts):
+    """The registry's events with these starts by event id (the others at START)."""
+    events = registry.get_event.side_effect
+    registry.get_event.side_effect = lambda tags, **kw: [
+        SimpleNamespace(**{**vars(e), "start_time": starts.get(e.event_id, START).isoformat()})
+        for e in events(tags, **kw)]
+
+
+def test_a_venue_that_moved_the_match_later_is_still_read():
+    # Polymarket International moved the match half an hour later than Kalshi's and Polymarket US's placeholder.
+    registry = _registry()
+    _moved(registry, {1: START + timedelta(minutes=30)})
+    assert scan(registry, NOW) == [], "the match launches on the anchor's start, which is still beyond the lookahead"
+    start_to = datetime.fromisoformat(registry.get_event.call_args_list[0].kwargs["start_to"])
+    assert start_to >= START + timedelta(minutes=30), "the scan reads every venue's event while any is near"
+    ((action, data, _),) = scan(registry, START + timedelta(minutes=5))
+    assert action == "launch" and [leg["venue"] for leg in data["legs"]] == ["kalshi", "polymarket", "polymarket_us"]
+    assert data["anchor_event_id"] == 1
+
+
+def test_a_match_whose_venues_all_start_beyond_the_lookahead_isnt_looked_up():
+    registry = _registry()
+    _moved(registry, {e: START + timedelta(hours=2) for e in EVENTS})
+    assert scan(registry, NOW) == []
+    registry.get_listing.assert_not_called()
+
+
 def test_a_match_the_registry_fails_on_doesnt_stop_the_scan():
     registry = _registry()
     registry.get_connected_relationships.side_effect = RuntimeError("registry 502")
@@ -266,11 +293,27 @@ def test_follows_the_anchors_start_not_another_venues():
 
 
 def test_doesnt_relaunch_on_a_match_its_strategy_already_stopped_on():
-    done = [SimpleNamespace(session_id="s9", config={"listings": [131, 132]})]
+    done = [SimpleNamespace(session_id="s9", config={"listings": [131, 132, 111, 112, 121, 122]})]
     evaluation = EsportsGameRule().evaluate(_data(), _params(), _ctx(stopped=done), now=NOW)
     assert isinstance(evaluation, NoMatch) and "s9" in evaluation.reason
     other = [SimpleNamespace(session_id="s8", config={"listings": [999]})]
     assert not isinstance(EsportsGameRule().evaluate(_data(), _params(), _ctx(stopped=other), now=NOW), NoMatch)
+
+
+def test_relaunches_once_the_trigger_brings_a_venue_the_stopped_session_lacked():
+    # Launched before Polymarket International's leg was known: Kalshi and Polymarket US only.
+    short = [SimpleNamespace(session_id="s7", config={"listings": "131,132,121,122"})]
+    assert not isinstance(EsportsGameRule().evaluate(_data(), _params(), _ctx(stopped=short), now=NOW), NoMatch)
+    same = _data(legs=[LEGS[0], LEGS[2]])
+    assert "s7" in EsportsGameRule().evaluate(same, _params(), _ctx(stopped=short), now=NOW).reason
+
+
+def test_waits_for_the_venues_it_requires():
+    without = _data(legs=[LEGS[0], LEGS[2]])
+    evaluation = EsportsGameRule().evaluate(without, _params(required_venues=["polymarket"]), _ctx(), now=NOW)
+    assert isinstance(evaluation, NoMatch) and "polymarket" in evaluation.reason
+    assert not isinstance(EsportsGameRule().evaluate(_data(), _params(required_venues=["polymarket"]), _ctx(),
+                                                     now=NOW), NoMatch)
 
 
 def test_launches_within_its_lead_with_the_legs_and_how_to_follow_the_match():

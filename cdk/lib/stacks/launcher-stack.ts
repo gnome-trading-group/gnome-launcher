@@ -377,6 +377,31 @@ export class LauncherStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(gameScannerFn, { retryAttempts: 0 })],
     });
 
+    // ── RT Scanner Lambda ─────────────────────────────────────────────────
+
+    // Reads gnome-pipelines' rt_films and rt_reviews every 10 minutes and queues rt launch and shutdown triggers. The
+    // rt_reviews source runs without end, so there is no run event to hook onto; sessions wait days for their film's
+    // review wave, so 10 minutes is plenty.
+    const rtScannerFn = createLambda(
+      'RtScanner',
+      'launcher.handlers.custom.rt_scanner.handler',
+      cdk.Duration.minutes(2),
+      1024,
+      {
+        LAUNCHER_QUEUE_URL: launcherQueue.queueUrl,
+        SHUTDOWN_QUEUE_URL: shutdownQueue.queueUrl,
+      },
+      (fn) => {
+        launcherQueue.grantSendMessages(fn);
+        shutdownQueue.grantSendMessages(fn);
+        grantResearchTablesRead(this, fn);
+      },
+    );
+    new events.Rule(this, 'RtScannerSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(10)),
+      targets: [new targets.LambdaFunction(rtScannerFn, { retryAttempts: 0 })],
+    });
+
     this.processors = [
       { name: 'TriggerProcessor', fn: triggerProcessorFn },
       { name: 'ShutdownProcessor', fn: shutdownProcessorFn },
@@ -384,6 +409,7 @@ export class LauncherStack extends cdk.Stack {
       { name: 'ClassifierAdapter', fn: classifierAdapterFn },
       { name: 'Cs2Scanner', fn: cs2ScannerFn },
       { name: 'GameScanner', fn: gameScannerFn },
+      { name: 'RtScanner', fn: rtScannerFn },
     ];
 
     // ── API Trigger Lambda ────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-gnome-launcher decides when to launch and stop strategy sessions. Triggers come from the classifier (SNS -> SQS), the CS2 scanner (after each gnome-pipelines `cs2_upcoming` run), the game scanner (esports matches from the registry, every 2 min), and the API. Each trigger is matched against launch rules, may wait for Slack or controller approval, and ends in a call to the registry (`create_strategy_session` -> `POST /strategy-sessions/launch`, or `stop_strategy_session_as_service`). The controller UI drives the API; gnome-bot reads it.
+gnome-launcher decides when to launch and stop strategy sessions. Triggers come from the classifier (SNS -> SQS), the CS2 scanner (after each gnome-pipelines `cs2_upcoming` run), the game scanner (esports matches from the registry, every 2 min), the RT scanner (films with Rotten Tomatoes markets, every 10 min), and the API. Each trigger is matched against launch rules, may wait for Slack or controller approval, and ends in a call to the registry (`create_strategy_session` -> `POST /strategy-sessions/launch`, or `stop_strategy_session_as_service`). The controller UI drives the API; gnome-bot reads it.
 
 ## Commands
 - Install: `poetry install`
@@ -18,12 +18,12 @@ gnome-launcher decides when to launch and stop strategy sessions. Triggers come 
 - `launcher/handlers/sweeper.py`: every 5 min; expiry, stuck-request recovery, session status tracking.
 - `launcher/handlers/api/`: REST API (`api_trigger`, `launch_requests`, `launch_rules`, `rule_types`, shared `http`).
 - `launcher/handlers/slack/`: `interaction` (Slack Interactivity endpoint), `approve_launch`, `approve_shutdown`.
-- `launcher/handlers/custom/`: trigger sources: `classifier_adapter` (SNS), `cs2_scanner` (research tables), `game_scanner` (registry: esports matches as merged proposition subjects, legs by stored relationships).
+- `launcher/handlers/custom/`: trigger sources: `classifier_adapter` (SNS), `cs2_scanner` and `rt_scanner` (research tables), `game_scanner` (registry: esports matches as merged proposition subjects, legs by stored relationships).
 - `launcher/rules/types.py`: `RuleType` base, `RULE_TYPE_REGISTRY`, `@register_rule_type`, shared strategy param schema.
 - `launcher/rules/catalog.py`: imports every rule type; anything looking a type up by name goes through it.
 - `launcher/rules/engine.py`: rate limits (max concurrent sessions, cooldown), then the type's `evaluate`.
 - `launcher/rules/validation.py`: rule schema, defaults, trigger `data_schema` and deadline checks.
-- `launcher/rules/{classifier_event,cs2,direct_launch,esports_game}.py`: the four rule types.
+- `launcher/rules/{classifier_event,cs2,direct_launch,esports_game,rt}.py`: the five rule types.
 - `launcher/lifecycle.py`: every request state change: dedup key, repeat check, launch, stop, fail, expire, schedules.
 - `launcher/dynamo.py`: all table access; conditional `transition`; trigger log (`record_evaluation`).
 - `launcher/models.py`: request statuses, trigger outcomes, open/dead-end status sets.
@@ -64,7 +64,8 @@ gnome-launcher decides when to launch and stop strategy sessions. Triggers come 
 - What runs:
   - ClassifierAdapter: ClassifierAdapterQueue (subscribed to the classifier SNS topic). It sends `new_events` to the launch queue and `resolved` to the shutdown queue.
   - Cs2Scanner: EventBridge rule on `gnome.pipelines` / `Pipeline Run Succeeded` / `cs2_upcoming`. It reads `cs2_upcoming_matches` and sends cs2 triggers. It resends every run on purpose, because dedup makes the repeats no-ops.
-  - GameScanner: EventBridge rate(2 minutes). Reads CS2, Dota 2, Valorant and League of Legends events (by tag) from the registry, groups their match-winner contracts by canonical subject, keeps each venue's pair only if it is EQUIVALENT to the anchor's (Polymarket International, else Kalshi) team for team in the relation gnomepy's `relations.close` rebuilds from the stored rows and complements, and sends esports_game triggers: launch from 30 min before the anchor's start (the rule waits for its `lead_minutes`, and won't relaunch on listings its strategy already has a STOPPED session on), shutdown once a venue resolves the match or 6 h after the start (sent for 2 h more). A match neither Polymarket International nor Kalshi lists isn't launched: the session follows play on one of their feeds.
+  - GameScanner: EventBridge rate(2 minutes). Reads CS2, Dota 2, Valorant and League of Legends events (by tag, up to 3 h past the 30 min lookahead: venues disagree on a match's start, so every venue's event is read while any is near) from the registry, groups their match-winner contracts by canonical subject, keeps each venue's pair only if it is EQUIVALENT to the anchor's (Polymarket International, else Kalshi) team for team in the relation gnomepy's `relations.close` rebuilds from the stored rows and complements, and sends esports_game triggers: launch from 30 min before the anchor's start (the rule waits for its `lead_minutes` and for its `required_venues`, and won't relaunch on a match its strategy already has a STOPPED session on holding every listing it would trade; one stopped short of a venue is relaunched once that venue's leg arrives), shutdown once a venue resolves the match or 6 h after the start (sent for 2 h more). A match neither Polymarket International nor Kalshi lists isn't launched: the session follows play on one of their feeds.
+  - RtScanner: EventBridge rate(10 minutes). Reads gnome-pipelines' `rt_films` (and `rt_reviews` for each film's first review wave) and sends rt triggers: launch while a film is open, closes within 13 days and its wave hasn't started (the rt rule resolves each strike's YES/NO esids to listings and won't relaunch a film whose rt_review_wave session stopped: it trades its wave and ends itself), shutdown for 2 days once the film is closed or past its close.
   - TriggerProcessor: LauncherFifoQueue (batch 1).
   - ShutdownProcessor: ShutdownFifoQueue (batch 1).
   - ScheduledLaunch: EventBridge Scheduler one-shot schedules.
@@ -77,7 +78,7 @@ gnome-launcher decides when to launch and stop strategy sessions. Triggers come 
 - Alarms (`monitoring-stack.ts`, cdk-monitoring-constructs like the registry and classifier; no actions: the registry's alerting stack picks up every alarm change via EventBridge, and the name suffix is the severity):
   - `Launcher--{Launcher,ClassifierAdapter,Shutdown}Queue-DLQ-Queue-Message-Count-Max-Error`: a message was dead-lettered, meaning a launch or shutdown that never happened. Check that function's logs for the exception, then the trigger log and request. Redrive only after the cause is fixed.
   - `Launcher--{Launcher,ClassifierAdapter,Shutdown}Queue-Queue-Message-Age-Max-Warning`: the oldest message is over 15 min old. A FIFO group is stuck behind a failing message, or the consumer is erroring or throttled.
-  - `Launcher--{TriggerProcessor,ShutdownProcessor,ScheduledLaunch,ClassifierAdapter,Cs2Scanner,GameScanner,Sweeper,SlackInteraction}-Fault-Count-Error`: one or more invocation errors in 5 min. The API Lambdas and ApproveLaunch/ApproveShutdown have no alarms.
+  - `Launcher--{TriggerProcessor,ShutdownProcessor,ScheduledLaunch,ClassifierAdapter,Cs2Scanner,GameScanner,RtScanner,Sweeper,SlackInteraction}-Fault-Count-Error`: one or more invocation errors in 5 min. The API Lambdas and ApproveLaunch/ApproveShutdown have no alarms.
 - Alerts sent (`alerts.py`, actor `launcher:<rule name>`):
   - `LAUNCH_SUCCEEDED`: a rule launched a session (key per session).
   - `LAUNCH_FAILED`: the registry refused or errored, the listings were held when a schedule fired, a schedule couldn't be created, or the sweeper found a stuck LAUNCHING/APPROVED request. The body carries the registry's reason. The key `LAUNCH_FAILED:<rule_id>:<dedup_key>` makes retries of the same trigger refire one alert.

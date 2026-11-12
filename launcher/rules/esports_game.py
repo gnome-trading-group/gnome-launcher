@@ -10,9 +10,12 @@ trigger is evaluated: venues move a match, and a moved start must move the launc
 
 The scanner sends a match's trigger from LOOKAHEAD before its start; the rule launches once the anchor venue's start
 (the venue whose live feed the session follows) is within its lead_minutes: another venue's placeholder start could
-otherwise launch it hours early and make it give up before play. It doesn't launch again on listings a session of its
-strategy has already been stopped on: a session ends itself once the match is over, and the match stays unresolved
-(and the trigger keeps coming) for a while after. A failed session is relaunched. The session is launched before play, not once it is live: it watches the match itself (Polymarket's
+otherwise launch it hours early and make it give up before play. It doesn't launch again on a match a session of its
+strategy was already stopped on holding every listing it would trade: a session ends itself once the match is over,
+and the match stays unresolved (and the trigger keeps coming) for a while after. One stopped short of a venue (it
+launched before that venue's leg was known) is launched again once the trigger brings it. A failed session is
+relaunched. A rule may require venues (required_venues: a strategy that quotes on one venue can do nothing without
+it), and then waits for their legs rather than launching without them. The session is launched before play, not once it is live: it watches the match itself (Polymarket's
 sports websocket, or Kalshi's live data) and trades nothing until play has begun, since a match that is never played
 settles differently by venue. It stops when a venue resolves the match, or RUN_FOR after the scheduled start.
 
@@ -128,6 +131,9 @@ class EsportsGameRule(RuleType):
                        "description": "The market this rule's strategy trades"},
             "venues": {"type": "array", "items": {"type": "string", "enum": list(VENUES)},
                        "default": list(VENUES), "description": "Venues to launch on"},
+            "required_venues": {"type": "array", "items": {"type": "string", "enum": list(VENUES)}, "default": [],
+                                "description": "Venues the strategy can't run without; the launch waits for their "
+                                               "legs"},
             "lead_minutes": {"type": "integer", "minimum": 0, "maximum": 30, "default": DEFAULT_LEAD_MINUTES,
                              "description": "Launch this long before the scheduled start (the scanner looks 30 "
                                             "minutes ahead); the session waits for play before trading"},
@@ -166,9 +172,14 @@ class EsportsGameRule(RuleType):
         if len(legs) < 2:
             return NoMatch(f"fewer than two of this rule's venues have the match's listings registered"
                            + (f": skipped {', '.join(skipped)}" if skipped else ""))
+        missing = [v for v in params.get("required_venues", []) if v not in {leg["venue"] for leg in legs}]
+        if missing:
+            return NoMatch(f"waiting for the match's {', '.join(missing)} listings, which this rule requires"
+                           + (f": skipped {', '.join(skipped)}" if skipped else ""))
+        trading = set(_listings(legs))
         stopped = [x.session_id for x in ctx.registry.get_strategy_sessions(strategy_id=params["strategy_id"],
                                                                              status=STOPPED) or []
-                   if listing_ids(x.config.get("listings", [])) & set(_listings(legs))]
+                   if trading <= listing_ids(x.config.get("listings", []))]
         if stopped:
             return NoMatch(f"session {stopped[0]} of this strategy already ran on the match and was stopped")
 

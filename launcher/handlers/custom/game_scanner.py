@@ -6,8 +6,10 @@ The classifier reads every venue's match-winner contracts into propositions and 
 one canonical subject (its merge pass and key aliases), deriving EQUIVALENT relationships between the contracts that
 pay on the same team. So a match is a subject, and each venue's pair of team contracts for it is a leg:
 
-- events of the scanned leagues (by tag) scheduled from RUN_FOR ago to LOOKAHEAD ahead, their contracts and
-  propositions; a venue's leg is its one event holding exactly two match-winner contracts naming different teams;
+- events of the scanned leagues (by tag) scheduled from RUN_FOR ago to LOOKAHEAD + START_SPREAD ahead, their
+  contracts and propositions; a venue's leg is its one event holding exactly two match-winner contracts naming
+  different teams. Venues often disagree on a match's start (one carries a placeholder, another moves it), so every
+  venue's event is read while any is near; a match whose venues all start beyond LOOKAHEAD is skipped;
   a venue with two such events on one subject (two fixtures, or a duplicate listing) is left out, being ambiguous;
 - the anchor is Polymarket International's leg, else Kalshi's: the session follows the match's live state on that
   venue's feed (Polymarket's sports websocket by event slug, Kalshi's milestone by event ticker), so a match neither
@@ -50,6 +52,9 @@ ANCHORS = ("polymarket", "kalshi")
 MARKET = "match"
 # Rules launch up to 30 minutes ahead (lead_minutes); a trigger needs to exist by then.
 LOOKAHEAD = timedelta(minutes=30)
+# How far apart venues' starts for one match may be: the classifier's subject merge start tolerance. A venue whose
+# event starts later than the others' must still be read, or the match launches without it.
+START_SPREAD = timedelta(hours=3)
 # A best-of-five runs about five hours; a session past this is freed even if no venue has resolved the match.
 RUN_FOR = timedelta(hours=6)
 # How long past RUN_FOR a match's shutdown keeps being sent: scans may be missed.
@@ -203,7 +208,7 @@ def scan(registry: RegistryClient, now: datetime) -> list[tuple[str, dict, str |
     events: dict[int, Event] = {}
     for league, tag in LEAGUES.items():
         for e in registry.get_event(tags=[tag], start_from=(now - RUN_FOR - SHUTDOWN_TAIL).isoformat(),
-                                    start_to=(now + LOOKAHEAD).isoformat()) or []:
+                                    start_to=(now + LOOKAHEAD + START_SPREAD).isoformat()) or []:
             venue = VENUES.get(codes.get(e.exchange_id))
             start = _time(e.start_time)
             if venue and start:
@@ -219,6 +224,8 @@ def scan(registry: RegistryClient, now: datetime) -> list[tuple[str, dict, str |
     by_subject: dict[int, list[Winner]] = defaultdict(list)
     for w in winners(propositions, contracts):
         by_subject[w.subject_id].append(w)
+    near = [subject_id for subject_id, ws in by_subject.items()
+            if min(events[w.event_id].start for w in ws) <= now + LOOKAHEAD]
 
     def one(subject_id: int) -> list[tuple[str, dict, str | None]]:
         listings, active = {}, set()
@@ -270,7 +277,7 @@ def scan(registry: RegistryClient, now: datetime) -> list[tuple[str, dict, str |
             return []
 
     with ThreadPoolExecutor(WORKERS) as pool:
-        return [t for found in pool.map(safe, sorted(by_subject)) for t in found]
+        return [t for found in pool.map(safe, sorted(near)) for t in found]
 
 
 def handler(event, context):
