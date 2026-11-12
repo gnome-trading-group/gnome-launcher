@@ -9,8 +9,9 @@ recognise every later scan as a repeat.
 
 A rule trades the venues it names; the session gets each strike of those venues whose two sides are in the registry
 (a strike missing either side is skipped). The strategy (rt_review_wave) waits for the film's first review wave,
-trades its window and ends itself, so a film whose session has stopped is never launched again: the wave it waited
-for has passed. A session that failed is relaunched by a later scan. Polymarket International sits in eu-west-1,
+trades its window and ends itself, so a film whose session ended itself is never launched again: the wave it waited
+for has passed (or RT already scores the film). A session that failed, or that a person or the launcher stopped (to
+move it onto a newer orchestrator, say), is relaunched by a later scan while the scanner still sends the film. Polymarket International sits in eu-west-1,
 Kalshi and Polymarket US in us-east-1; the session is placed in HOME_VENUE's region whenever it trades there, and the
 other venues' books reach it over the platform's region peering.
 """
@@ -39,6 +40,8 @@ EXCHANGE_NAMES = {"kalshi": "Kalshi", "polymarket": "Polymarket (International)"
 # Most of the money the research found to take was on Kalshi.
 HOME_VENUE = "kalshi"
 STOPPED = "STOPPED"
+# What the orchestrator records as stopped_by when a strategy ends its own session.
+STOPPED_BY_STRATEGY = "strategy"
 SHUTDOWN_REASONS = {"closed": "no longer has open markets", "past_close": "is past its markets' close"}
 RT_URL = "https://www.rottentomatoes.com/m/{slug}"
 
@@ -128,11 +131,12 @@ class RtRule(RuleType):
         if not legs:
             return NoMatch("none of this rule's venues has the film's strikes in the registry"
                            + (f": skipped {', '.join(skipped)}" if skipped else ""))
-        stopped = [s.session_id for s in ctx.registry.get_strategy_sessions(strategy_id=params["strategy_id"],
-                                                                             status=STOPPED) or []
-                   if listing_ids(s.config.get("listings", [])) & set(_listings(legs))]
-        if stopped:
-            return NoMatch(f"session {stopped[0]} of this strategy already traded the film's wave and stopped")
+        ended = [s.session_id for s in ctx.registry.get_strategy_sessions(strategy_id=params["strategy_id"],
+                                                                           status=STOPPED) or []
+                 if getattr(s, "stopped_by", None) == STOPPED_BY_STRATEGY
+                 and listing_ids(s.config.get("listings", [])) & set(_listings(legs))]
+        if ended:
+            return NoMatch(f"session {ended[0]} of this strategy already traded the film's wave and ended itself")
 
         config = ResolvedStrategyConfig.from_params(params, listings=_listings(legs))
         config.strategy_args = {**config.strategy_args, "film_id": data["film_id"], "legs": legs}

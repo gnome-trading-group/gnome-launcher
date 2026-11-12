@@ -77,9 +77,13 @@ def test_without_kalshi_the_registry_places_the_session():
 
 def test_nothing_launches_without_registered_strikes_or_after_the_films_session_stopped():
     assert isinstance(RtRule().evaluate(_data(), _params(), _ctx(listed={})), NoMatch)
-    stopped = SimpleNamespace(session_id="s1", status="STOPPED", config={"listings": "11,12,21"})
-    result = RtRule().evaluate(_data(), _params(), _ctx(sessions=[stopped]))
+    ended = SimpleNamespace(session_id="s1", status="STOPPED", stopped_by="strategy", config={"listings": "11,12,21"})
+    result = RtRule().evaluate(_data(), _params(), _ctx(sessions=[ended]))
     assert isinstance(result, NoMatch) and "already traded" in result.reason
+    by_hand = SimpleNamespace(session_id="s3", status="STOPPED", stopped_by="mprey@gnometrading.group",
+                              config={"listings": "11,12,21"})
+    assert not isinstance(RtRule().evaluate(_data(), _params(), _ctx(sessions=[by_hand])), NoMatch), \
+        "stopped by a person (to move it to a newer orchestrator): relaunched"
     failed = SimpleNamespace(session_id="s2", status="FAILED", config={"listings": "11,12,21"})
     assert not isinstance(RtRule().evaluate(_data(), _params(), _ctx(sessions=[failed])), NoMatch), "relaunched"
 
