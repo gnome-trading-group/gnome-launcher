@@ -147,3 +147,18 @@ def test_the_newest_row_of_each_film_counts():
 def test_the_scanners_triggers_match_the_rules_data_schema():
     for _, data in _scan([_film()]) + _scan([_film(open_=False)]):
         assert validate_data("rt", json.loads(json.dumps(data, default=str))) == []
+
+
+def test_rows_written_before_films_had_markets_launch_nothing_and_still_shut_down():
+    old = pd.DataFrame([{k: v for k, v in _film().items() if k != "markets"}]).assign(markets=None)
+    assert triggers(old, pd.DataFrame(), NOW) == []
+    closed = pd.DataFrame([{k: v for k, v in _film(open_=False).items() if k != "markets"}]).assign(markets=None)
+    assert [a for a, _ in triggers(closed, pd.DataFrame(), NOW)] == ["shutdown"]
+
+
+def test_a_film_rt_already_scores_is_not_launched():
+    scores = pd.DataFrame([{"film_id": FILM, "liked": 47, "not_liked": 13}])
+    assert triggers(pd.DataFrame([_film()]), pd.DataFrame(), NOW, scores) == []
+    few = pd.DataFrame([{"film_id": FILM, "liked": 2, "not_liked": 0}])
+    assert triggers(pd.DataFrame([_film()]), pd.DataFrame(), NOW, few)[0][0] == "launch"
+    assert triggers(pd.DataFrame([_film(open_=False)]), pd.DataFrame(), NOW, scores)[0][0] == "shutdown"
