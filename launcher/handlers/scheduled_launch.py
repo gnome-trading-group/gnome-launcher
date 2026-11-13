@@ -30,7 +30,7 @@ def fire(request_id: str, ctx: RuleContext) -> None:
         return
     rule_name = request["matched_rule_name"]
     rule = ctx.dynamo.get_rule(request["matched_rule_id"])
-    blocker = lifecycle.blocking_session(ResolvedStrategyConfig(**request["resolved_config"]), ctx)
+    blocker = lifecycle.blocking_session(ResolvedStrategyConfig.restore(request["resolved_config"]), ctx)
     if rule is None or rule["status"] != "active":
         result = ctx.dynamo.transition(request_id, "LAUNCHING", "CANCELLED", ACTOR,
                                        note=f"rule {rule_name} is no longer active")

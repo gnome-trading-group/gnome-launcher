@@ -47,10 +47,9 @@ def create_session(registry: RegistryClient, session_id: str, resolved_config: R
     # Unset fields are left out rather than passed as None, so a gnomepy that predates them still works.
     optional = {
         "research_commit": resolved_config.research_commit,
+        "strategy_commit": resolved_config.strategy_commit,
         "region": resolved_config.region,
         "instance_type": resolved_config.instance_type,
-        "orchestrator_version": resolved_config.orchestrator_version,
-        "gnomepy_version": resolved_config.gnomepy_version,
         "availability_zone": resolved_config.availability_zone,
     }
     return registry.create_strategy_session(

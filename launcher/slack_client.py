@@ -86,7 +86,7 @@ class SlackClient:
         expires_at = request.get("expires_at")
         blocks = _build_approval_blocks(
             request["request_id"], request["matched_rule_name"], request["matched_rule_id"], request_reason(request),
-            ResolvedStrategyConfig(**request["resolved_config"]), request.get("links") or {},
+            ResolvedStrategyConfig.restore(request["resolved_config"]), request.get("links") or {},
             datetime.fromisoformat(scheduled) if scheduled else None, None,
             datetime.fromisoformat(expires_at) if expires_at else None, deadline_label)
         self.update_message(request.get("slack_message_ts"),

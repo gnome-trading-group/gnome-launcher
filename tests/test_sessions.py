@@ -46,9 +46,8 @@ def test_create_session_passes_set_fields():
         "s1",
         _config(
             research_commit="abc",
+            strategy_commit="def",
             instance_type="c7i.8xlarge",
-            orchestrator_version="1.12.2",
-            gnomepy_version="2.20.2",
             availability_zone="us-east-1b",
         ),
         "r1",
@@ -56,8 +55,8 @@ def test_create_session_passes_set_fields():
 
     kwargs = registry.create_strategy_session.call_args.kwargs
     assert kwargs["instance_type"] == "c7i.8xlarge"
-    assert kwargs["orchestrator_version"] == "1.12.2"
-    assert kwargs["gnomepy_version"] == "2.20.2"
+    assert kwargs["strategy_commit"] == "def"
+    assert "orchestrator_version" not in kwargs and "gnomepy_version" not in kwargs
     assert kwargs["availability_zone"] == "us-east-1b"
     assert kwargs["research_commit"] == "abc"
 
@@ -91,3 +90,14 @@ def test_a_paper_session_carries_its_simulation_and_a_live_one_none():
     assert build_session_config(_config(), "r1")["simulation"] == {}
     live = replace(_config(simulation=simulation), mode="live")
     assert "simulation" not in build_session_config(live, "r1")
+
+
+def test_restore_drops_fields_a_stored_request_carries_from_before():
+    stored = {
+        "strategy_id": 7, "strategy_type": "java", "strategy_class": "c.S", "mode": "paper", "listings": [1],
+        "orchestrator_version": "1.12.2", "gnomepy_version": "2.20.2", "strategy_commit": "abc",
+    }
+
+    config = ResolvedStrategyConfig.restore(stored)
+
+    assert config.strategy_commit == "abc" and config.listings == [1]

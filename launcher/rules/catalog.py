@@ -4,8 +4,9 @@ from launcher.rules.cs2 import CS2Rule
 from launcher.rules.direct_launch import DirectLaunchRule
 from launcher.rules.esports_game import EsportsGameRule
 from launcher.rules.rt import RtRule
+from launcher.rules.rt_maker import RtMakerRule
 from launcher.rules.types import RULE_TYPE_REGISTRY
 
-RULE_TYPES = (ClassifierEventRule, CS2Rule, DirectLaunchRule, EsportsGameRule, RtRule)
+RULE_TYPES = (ClassifierEventRule, CS2Rule, DirectLaunchRule, EsportsGameRule, RtRule, RtMakerRule)
 
 __all__ = ["RULE_TYPES", "RULE_TYPE_REGISTRY"]

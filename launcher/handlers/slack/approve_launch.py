@@ -73,7 +73,7 @@ def _launch(request: LaunchRequest, actor: str, username: str, ctx: RuleContext)
     if lifecycle.is_expired(launching.get("expires_at")):
         lifecycle.expire(ctx.dynamo, ctx.slack, launching, "LAUNCHING", actor)
         return
-    blocker = lifecycle.blocking_session(ResolvedStrategyConfig(**request["resolved_config"]), ctx)
+    blocker = lifecycle.blocking_session(ResolvedStrategyConfig.restore(request["resolved_config"]), ctx)
     if blocker:
         result = lifecycle.fail(ctx, launching, "LAUNCHING", request["matched_rule_name"],
                                 f"Session {blocker} already holds these listings", actor)

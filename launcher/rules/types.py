@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -34,11 +34,12 @@ STRATEGY_PARAMS_SCHEMA: dict = {
     "strategy_type": {"type": "string", "enum": ["java", "python"]},
     "strategy_class": {"type": "string"},
     "mode": {"type": "string", "enum": ["paper", "live"]},
+    # The commit the session runs (gnomepy-research for python, gnome-strategies for java; default main). It pins the
+    # orchestrator and gnomepy releases too, so a rule names no versions.
     "research_commit": {"type": "string"},
+    "strategy_commit": {"type": "string"},
     "instance_type": {"type": "string"},
     "latency_profile": {"type": "string", "enum": ["low_latency", "standard"]},
-    "orchestrator_version": {"type": "string"},
-    "gnomepy_version": {"type": "string"},
     "availability_zone": {"type": "string"},
     "strategy_args": {
         "type": "object",
@@ -76,13 +77,12 @@ class ResolvedStrategyConfig:
     mode: str
     listings: list[int]
     research_commit: str | None = None
+    strategy_commit: str | None = None
     region: str | None = None
     strategy_args: dict[str, Any] = field(default_factory=dict)
     simulation: dict[str, Any] = field(default_factory=dict)
     instance_type: str | None = None
     latency_profile: str | None = None
-    orchestrator_version: str | None = None
-    gnomepy_version: str | None = None
     availability_zone: str | None = None
     overrides: dict[str, str] = field(default_factory=dict)
 
@@ -95,15 +95,21 @@ class ResolvedStrategyConfig:
             mode=params["mode"],
             listings=listings,
             research_commit=params.get("research_commit"),
+            strategy_commit=params.get("strategy_commit"),
             strategy_args=params.get("strategy_args", {}),
             simulation=params.get("simulation", {}),
             instance_type=params.get("instance_type"),
             latency_profile=params.get("latency_profile"),
-            orchestrator_version=params.get("orchestrator_version"),
             overrides=params.get("overrides", {}),
-            gnomepy_version=params.get("gnomepy_version"),
             availability_zone=params.get("availability_zone"),
         )
+
+
+    @classmethod
+    def restore(cls, stored: dict) -> ResolvedStrategyConfig:
+        """A config stored with a launch request, which may carry fields since removed (pinned versions)."""
+        names = {f.name for f in fields(cls)}
+        return cls(**{key: value for key, value in stored.items() if key in names})
 
 
 @dataclass

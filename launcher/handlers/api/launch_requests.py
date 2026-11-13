@@ -168,7 +168,7 @@ def _resend(request: LaunchRequest, who: str, dynamo: DynamoClient):
         scheduled = request.get("scheduled_time")
         ts = slack.send_approval_message(
             request_id=request["request_id"], rule_name=request["matched_rule_name"],
-            rule_id=request["matched_rule_id"], reason=reason, config=ResolvedStrategyConfig(**request["resolved_config"]),
+            rule_id=request["matched_rule_id"], reason=reason, config=ResolvedStrategyConfig.restore(request["resolved_config"]),
             links=links, scheduled_time=datetime.fromisoformat(scheduled) if scheduled else None,
             expires_at=lifecycle.deadline(request.get("expires_at")),
             deadline_label=lifecycle.deadline_label(request["rule_type"]),

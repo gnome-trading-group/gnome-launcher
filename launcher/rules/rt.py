@@ -50,7 +50,7 @@ def _listings(legs: list[dict]) -> list[int]:
     return [int(leg[key]) for leg in legs for key in ("yes_listing", "no_listing")]
 
 
-def _region(legs: list[dict], ctx: RuleContext) -> str | None:
+def home_region(legs: list[dict], ctx: RuleContext) -> str | None:
     """HOME_VENUE's exchange region when the session trades it; otherwise the registry places it by its listings."""
     home = next((leg for leg in legs if leg["venue"] == HOME_VENUE), None)
     if home is None:
@@ -65,6 +65,28 @@ def _region(legs: list[dict], ctx: RuleContext) -> str | None:
 def _listing_id(ctx: RuleContext, exchange_id: int, esid: str) -> int | None:
     found = ctx.registry.get_listing(exchange_id=exchange_id, exchange_security_id=esid)
     return int(found[0].listing_id) if found else None
+
+
+def resolve_legs(markets: list[dict], venues, ctx: RuleContext) -> tuple[list[dict], list[str]]:
+    """The venues' strikes whose two sides are in the registry, as legs, and what was skipped and why."""
+    exchange_ids: dict[str, int | None] = {}
+    legs, skipped = [], []
+    for m in markets:
+        venue = m["venue"]
+        if venue not in venues:
+            continue
+        if venue not in exchange_ids:
+            found = ctx.registry.get_exchange(exchange_name=EXCHANGE_NAMES[venue])
+            exchange_ids[venue] = int(found[0].exchange_id) if found else None
+        if exchange_ids[venue] is None:
+            skipped.append(f"{venue} (no {EXCHANGE_NAMES[venue]} exchange in the registry)")
+            continue
+        yes, no = (_listing_id(ctx, exchange_ids[venue], m[side]) for side in ("yes", "no"))
+        if yes is None or no is None:
+            skipped.append(f"{venue} >={m['strike']}")
+            continue
+        legs.append({"venue": venue, "strike": int(m["strike"]), "yes_listing": yes, "no_listing": no})
+    return legs, skipped
 
 
 @register_rule_type
@@ -110,24 +132,7 @@ class RtRule(RuleType):
     }
 
     def evaluate(self, data: dict, params: dict, ctx: RuleContext) -> RuleEvaluation | NoMatch:
-        venues = params.get("venues", VENUES)
-        exchange_ids: dict[str, int | None] = {}
-        legs, skipped = [], []
-        for m in data["markets"]:
-            venue = m["venue"]
-            if venue not in venues:
-                continue
-            if venue not in exchange_ids:
-                found = ctx.registry.get_exchange(exchange_name=EXCHANGE_NAMES[venue])
-                exchange_ids[venue] = int(found[0].exchange_id) if found else None
-            if exchange_ids[venue] is None:
-                skipped.append(f"{venue} (no {EXCHANGE_NAMES[venue]} exchange in the registry)")
-                continue
-            yes, no = (_listing_id(ctx, exchange_ids[venue], m[side]) for side in ("yes", "no"))
-            if yes is None or no is None:
-                skipped.append(f"{venue} >={m['strike']}")
-                continue
-            legs.append({"venue": venue, "strike": int(m["strike"]), "yes_listing": yes, "no_listing": no})
+        legs, skipped = resolve_legs(data["markets"], params.get("venues", VENUES), ctx)
         if not legs:
             return NoMatch("none of this rule's venues has the film's strikes in the registry"
                            + (f": skipped {', '.join(skipped)}" if skipped else ""))
@@ -140,7 +145,7 @@ class RtRule(RuleType):
 
         config = ResolvedStrategyConfig.from_params(params, listings=_listings(legs))
         config.strategy_args = {**config.strategy_args, "film_id": data["film_id"], "legs": legs}
-        config.region = _region(legs, ctx)
+        config.region = home_region(legs, ctx)
         reason = (f"RT film {data.get('title') or data['film_id']}: {len(legs)} strikes on "
                   f"{', '.join(sorted({leg['venue'] for leg in legs}))}")
         if skipped:

@@ -130,7 +130,7 @@ def launch(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str
     """Creates the session for a request already LAUNCHING. The session id is recorded before the registry is
     called, so a launch that times out after the registry made the session still leads to it."""
     request_id = request["request_id"]
-    config = ResolvedStrategyConfig(**request["resolved_config"])
+    config = ResolvedStrategyConfig.restore(request["resolved_config"])
     quiet = _is_quiet(ctx, request)
     session_id = str(uuid.uuid4())
     ctx.dynamo.annotate(request_id, session_id=session_id)
@@ -157,7 +157,7 @@ def launch(ctx: RuleContext, request: LaunchRequest, rule_name: str, reason: str
 def fail(ctx: RuleContext, request: LaunchRequest, expected: str, rule_name: str, error: str, actor: str) -> LaunchRequest | None:
     failed = ctx.dynamo.transition(request["request_id"], expected, "FAILED", actor, note=error, launch_error=error)
     if failed is not None:
-        config = ResolvedStrategyConfig(**request["resolved_config"]) if request.get("resolved_config") else None
+        config = ResolvedStrategyConfig.restore(request["resolved_config"]) if request.get("resolved_config") else None
         alerts.launch_failed(ctx.registry, rule_name, _failure_key(request), error, config)
     return failed
 

@@ -14,6 +14,11 @@ the exchange security ids of each strike's YES and NO sides). For the newest row
   launched just to end at once;
 - shut down once the venues no longer list it (closed) or its close has passed, for CLOSED_FOR after.
 
+The same rows also drive the `rt_maker` rule (gnomepy-research's rt_maker, a resting maker for Kalshi's liquidity
+rewards), with the film's Kalshi strikes only: launched while the film is open with Kalshi strikes and its close
+is ahead, however far, and whatever its reviews (the maker pulls its quotes around them itself; the rewards pay every
+day a strike's program runs, often weeks before release), and shut down as above.
+
 Each scan resends the same triggers; the launcher's dedup and its active-session check make the repeats no-ops, and the
 rt rule won't relaunch a film whose session stopped. Markets are sorted so the same strikes are always the same
 trigger.
@@ -37,6 +42,8 @@ FILMS = "rt_films"
 REVIEWS = "rt_reviews"
 SCORES = "rt_scores"
 RULE_TYPE = "rt"
+MAKER_RULE_TYPE = "rt_maker"
+MAKER_VENUE = "kalshi"
 LAUNCH_BEFORE_CLOSE = pd.Timedelta(days=13)
 CLOSED_FOR = pd.Timedelta(days=2)
 WAVE_REVIEWS = 3
@@ -86,6 +93,26 @@ def triggers(films: pd.DataFrame, reviews: pd.DataFrame, now: pd.Timestamp,
     return out
 
 
+def maker_triggers(films: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict]]:
+    """("launch" | "shutdown", trigger data) for the rt_maker rule, from each film's newest row."""
+    out = []
+    for f in films.itertuples():
+        markets = sorted((m for m in (json.loads(f.markets) if isinstance(f.markets, str) and f.markets else [])
+                          if m["venue"] == MAKER_VENUE), key=lambda m: m["strike"])
+        data = {"film_id": f.film_id, "title": f.title, "rt_slug": f.rt_slug if isinstance(f.rt_slug, str) else None,
+                "markets": markets}
+        close = pd.Timestamp(f.close) if not pd.isna(f.close) else None
+        if not f.open:
+            if now - pd.Timestamp(f.first_seen_at) <= CLOSED_FOR:
+                out.append(("shutdown", {**data, "reason": CLOSED}))
+        elif close is not None and close <= now:
+            if now - close <= CLOSED_FOR:
+                out.append(("shutdown", {**data, "reason": PAST_CLOSE}))
+        elif markets:
+            out.append(("launch", data))
+    return out
+
+
 def handler(event, context):
     now = pd.Timestamp(datetime.now(timezone.utc))
     store = DatasetStore()
@@ -96,12 +123,15 @@ def handler(event, context):
         films = films.assign(markets=None)
     reviews = store.load(REVIEWS, columns=["url", "film_id", "published_at", "first_seen_at", "is_review"])
     scores = store.load(SCORES, columns=["film_id", "liked", "not_liked"])
-    found = triggers(latest(films, "film_id"), latest(reviews, "url") if len(reviews) else reviews, now, scores) \
-        if len(films) else []
+    newest = latest(films, "film_id") if len(films) else films
+    found = [(RULE_TYPE, a, d) for a, d in triggers(newest, latest(reviews, "url") if len(reviews) else reviews, now,
+                                                    scores)] if len(films) else []
+    found += [(MAKER_RULE_TYPE, a, d) for a, d in maker_triggers(newest, now)] if len(films) else []
     queues = {"launch": os.environ["LAUNCHER_QUEUE_URL"], "shutdown": os.environ["SHUTDOWN_QUEUE_URL"]}
     sqs = boto3.client("sqs")
-    for action, data in found:
-        send_trigger(sqs, queues[action], RULE_TYPE, action, data, now.isoformat(), None)
-    counts = {a: sum(1 for x, _ in found if x == a) for a in ("launch", "shutdown")}
+    for rule_type, action, data in found:
+        send_trigger(sqs, queues[action], rule_type, action, data, now.isoformat(), None)
+    counts = {f"{r} {a}": sum(1 for rt, x, _ in found if (rt, x) == (r, a))
+              for r in (RULE_TYPE, MAKER_RULE_TYPE) for a in ("launch", "shutdown")}
     logger.info("rt scan: %d films, %s", len(films), counts)
     return counts
