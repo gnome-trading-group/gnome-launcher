@@ -27,8 +27,9 @@ def _params(**overrides):
             "research_commit": "933d27f", **overrides}
 
 
-# Listings 2x are Polymarket International's (exchange 4, eu-west-1); the rest are in us-east-1.
-REGIONS = {4: "eu-west-1", 5: "us-east-1", 6: "us-east-1"}
+# Listings 1x are Kalshi's (exchange 5, us-east-2), 2x Polymarket International's (exchange 4, eu-west-1) and 3x
+# Polymarket US's (exchange 6, us-east-1).
+REGIONS = {4: "eu-west-1", 5: "us-east-2", 6: "us-east-1"}
 
 
 def _ctx(registered=REGISTERED, sessions=()):
@@ -54,8 +55,11 @@ def test_launches_one_session_for_the_match_holding_every_venues_listings():
 
 def test_the_session_runs_in_polymarket_internationals_region_when_it_trades_there():
     assert CS2Rule().evaluate(_data(), _params(), _ctx()).resolved_config.region == "eu-west-1"
+
+
+def test_a_session_without_polymarket_international_runs_beside_kalshi():
     us_only = CS2Rule().evaluate(_data(legs=[LEGS[0], LEGS[2]]), _params(), _ctx()).resolved_config
-    assert us_only.region is None, "the registry places a session whose listings share a region"
+    assert us_only.region == "us-east-2"
 
 
 def test_the_session_carries_the_rules_simulation_overrides():

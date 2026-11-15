@@ -12,7 +12,7 @@ A rule trades the venues it names; the session gets each strike of those venues 
 trades its window and ends itself, so a film whose session ended itself is never launched again: the wave it waited
 for has passed (or RT already scores the film). A session that failed, or that a person or the launcher stopped (to
 move it onto a newer orchestrator, say), is relaunched by a later scan while the scanner still sends the film. Polymarket International sits in eu-west-1,
-Kalshi and Polymarket US in us-east-1; the session is placed in HOME_VENUE's region whenever it trades there, and the
+Kalshi in us-east-2 and Polymarket US in us-east-1; the session is placed in HOME_VENUE's region whenever it trades there, and the
 other venues' books reach it over the platform's region peering.
 """
 from __future__ import annotations

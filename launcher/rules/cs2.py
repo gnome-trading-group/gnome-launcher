@@ -15,8 +15,8 @@ stop_past_kickoff false, and its sessions then stop only once the match is finis
 is also launched on a match already being played (phase "live" triggers), which no other rule acts on. Turning
 launch_before_kickoff off as well launches only once HLTV lists the match live: a cross-venue position taken before
 play isn't hedged against a match that is never played, which the venues settle differently. Venues sit in different regions (Polymarket International in
-eu-west-1, Kalshi and Polymarket US in us-east-1) and the registry places a session only by a region it is given
-or one its listings share, so the session is placed in HOME_VENUE's region whenever it trades there.
+eu-west-1, Kalshi in us-east-2, Polymarket US in us-east-1) and the registry places a session only by a region it is
+given or one its listings share, so the session is always given the region of the first of HOME_VENUES it trades.
 """
 from __future__ import annotations
 
@@ -38,9 +38,10 @@ from launcher.sessions import ACTIVE_SESSION_STATUSES, listing_ids
 logger = logging.getLogger(__name__)
 
 VENUES = ("polymarket", "kalshi", "polymarket_us")
-# The session prices off this venue's mid (cs2_series blends with it), so it runs where this venue is collected and
-# traded; the other venues' books reach it over the platform's region peering.
-HOME_VENUE = "polymarket"
+# The session runs where the first of these it trades is collected and traded: cs2_series prices off Polymarket
+# International's mid, and without it Kalshi's book moves first. The other venues' books reach it over the platform's
+# region peering.
+HOME_VENUES = ("polymarket", "kalshi", "polymarket_us")
 # HLTV ignores the slug but needs one: /matches/<id>/ alone serves the home page.
 HLTV_MATCH_URL = "https://www.hltv.org/matches/{match_id}/match"
 MARKETS = ("series", "game1")
@@ -54,8 +55,8 @@ def _listings(legs: list[dict]) -> list[int]:
 
 
 def _region(legs: list[dict], ctx: RuleContext) -> str | None:
-    """HOME_VENUE's exchange region when the session trades it; otherwise the registry places it by its listings."""
-    home = next((leg for leg in legs if leg["venue"] == HOME_VENUE), None)
+    """The exchange region of the first of HOME_VENUES the session trades."""
+    home = next((leg for venue in HOME_VENUES for leg in legs if leg["venue"] == venue), None)
     if home is None:
         return None
     listing = ctx.registry.get_listing(listing_id=int(home["listing_team_a"]))[0]

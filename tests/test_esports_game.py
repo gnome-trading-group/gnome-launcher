@@ -258,7 +258,7 @@ def test_a_match_the_registry_fails_on_doesnt_stop_the_scan():
 LEGS = [{"venue": "kalshi", "listing_team_a": 131, "listing_team_b": 132},
         {"venue": "polymarket", "listing_team_a": 111, "listing_team_b": 112},
         {"venue": "polymarket_us", "listing_team_a": 121, "listing_team_b": 122}]
-REGIONS = {4: "eu-west-1", 5: "us-east-1", 6: "us-east-1"}
+REGIONS = {4: "eu-west-1", 5: "us-east-2", 6: "us-east-1"}
 
 
 def _data(**overrides):
@@ -345,9 +345,9 @@ def test_skips_other_leagues_and_markets_and_matches_on_fewer_than_two_of_its_ve
     assert "fewer than two" in partial.reason and "polymarket (listings [112]" in partial.reason
 
 
-def test_a_us_only_session_is_placed_by_its_listings():
+def test_a_session_without_polymarket_international_runs_beside_kalshi():
     evaluation = EsportsGameRule().evaluate(_data(legs=[LEGS[0], LEGS[2]]), _params(), _ctx(), now=NOW)
-    assert evaluation.resolved_config.region is None
+    assert evaluation.resolved_config.region == "us-east-2"
 
 
 def test_shuts_down_the_sessions_holding_the_matchs_listings():

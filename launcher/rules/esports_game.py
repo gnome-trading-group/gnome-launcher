@@ -19,9 +19,9 @@ it), and then waits for their legs rather than launching without them. The sessi
 sports websocket, or Kalshi's live data) and trades nothing until play has begun, since a match that is never played
 settles differently by venue. It stops when a venue resolves the match, or RUN_FOR after the scheduled start.
 
-Venues sit in different regions (Polymarket International in eu-west-1, Kalshi and Polymarket US in us-east-1) and
-the registry places a session only by a region it is given or one its listings share, so the session is placed in
-HOME_VENUE's region whenever it trades there.
+Venues sit in different regions (Polymarket International in eu-west-1, Kalshi in us-east-2, Polymarket US in
+us-east-1) and the registry places a session only by a region it is given or one its listings share, so the session
+is always given the region of the first of HOME_VENUES it trades.
 """
 from __future__ import annotations
 
@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 LEAGUES = ("cs2", "dota2", "valorant", "lol")
 VENUES = ("polymarket", "kalshi", "polymarket_us")
 MARKETS = ("match",)
-HOME_VENUE = "polymarket"
+# The session runs beside the first of these it trades; the other venues' books reach it over region peering.
+HOME_VENUES = ("polymarket", "kalshi", "polymarket_us")
 STOPPED = "STOPPED"
 DEFAULT_LEAD_MINUTES = 10
 POLYMARKET_EVENT_URL = "https://polymarket.com/event/{slug}"
@@ -59,8 +60,8 @@ def _listings(legs: list[dict]) -> list[int]:
 
 
 def _region(legs: list[dict], ctx: RuleContext) -> str | None:
-    """HOME_VENUE's exchange region when the session trades it; otherwise the registry places it by its listings."""
-    home = next((leg for leg in legs if leg["venue"] == HOME_VENUE), None)
+    """The exchange region of the first of HOME_VENUES the session trades."""
+    home = next((leg for venue in HOME_VENUES for leg in legs if leg["venue"] == venue), None)
     if home is None:
         return None
     listing = ctx.registry.get_listing(listing_id=int(home["listing_team_a"]))[0]
