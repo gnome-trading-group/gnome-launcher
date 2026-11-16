@@ -32,6 +32,8 @@ def build_session_config(resolved_config: ResolvedStrategyConfig, rule_id: str) 
     }
     if resolved_config.latency_profile:
         result["latency.profile"] = resolved_config.latency_profile
+    if resolved_config.sizing_tier:
+        result["sizing.tier"] = resolved_config.sizing_tier
     for k, v in resolved_config.strategy_args.items():
         result[f"strategy.args.{k}"] = v
     # Paper sessions only: with nothing set, each listing simulates as its exchange is recorded in the registry.

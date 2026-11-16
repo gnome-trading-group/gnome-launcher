@@ -40,6 +40,9 @@ STRATEGY_PARAMS_SCHEMA: dict = {
     "strategy_commit": {"type": "string"},
     "instance_type": {"type": "string"},
     "latency_profile": {"type": "string", "enum": ["low_latency", "standard"]},
+    # How the registry sizes the session when no instance_type is set: slow, standard or low_latency (the profile
+    # follows from it). With neither this nor instance_type, the registry sizes it as standard.
+    "sizing_tier": {"type": "string", "enum": ["slow", "standard", "low_latency"]},
     "availability_zone": {"type": "string"},
     "strategy_args": {
         "type": "object",
@@ -83,6 +86,7 @@ class ResolvedStrategyConfig:
     simulation: dict[str, Any] = field(default_factory=dict)
     instance_type: str | None = None
     latency_profile: str | None = None
+    sizing_tier: str | None = None
     availability_zone: str | None = None
     overrides: dict[str, str] = field(default_factory=dict)
 
@@ -100,6 +104,7 @@ class ResolvedStrategyConfig:
             simulation=params.get("simulation", {}),
             instance_type=params.get("instance_type"),
             latency_profile=params.get("latency_profile"),
+            sizing_tier=params.get("sizing_tier"),
             overrides=params.get("overrides", {}),
             availability_zone=params.get("availability_zone"),
         )

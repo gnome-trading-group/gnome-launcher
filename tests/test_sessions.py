@@ -25,6 +25,11 @@ def test_latency_profile_travels_in_the_session_config():
     assert "latency.profile" not in build_session_config(_config(), "r1")
 
 
+def test_the_sizing_tier_travels_in_the_session_config():
+    assert build_session_config(_config(sizing_tier="slow"), "r1")["sizing.tier"] == "slow"
+    assert "sizing.tier" not in build_session_config(_config(), "r1")
+
+
 def test_every_session_is_stamped_with_the_rule_that_launched_it():
     assert build_session_config(_config(), "rule-9")["launcher.rule.id"] == "rule-9"
 
@@ -47,14 +52,14 @@ def test_create_session_passes_set_fields():
         _config(
             research_commit="abc",
             strategy_commit="def",
-            instance_type="c7i.8xlarge",
+            instance_type="c7i.4xlarge",
             availability_zone="us-east-1b",
         ),
         "r1",
     )
 
     kwargs = registry.create_strategy_session.call_args.kwargs
-    assert kwargs["instance_type"] == "c7i.8xlarge"
+    assert kwargs["instance_type"] == "c7i.4xlarge"
     assert kwargs["strategy_commit"] == "def"
     assert "orchestrator_version" not in kwargs and "gnomepy_version" not in kwargs
     assert kwargs["availability_zone"] == "us-east-1b"
@@ -70,11 +75,13 @@ def test_from_params_reads_launch_options():
             "mode": "paper",
             "instance_type": "c7i.xlarge",
             "latency_profile": "standard",
+            "sizing_tier": "slow",
         },
         listings=[1],
     )
     assert config.instance_type == "c7i.xlarge"
     assert config.latency_profile == "standard"
+    assert config.sizing_tier == "slow"
 
 
 def test_orchestrator_overrides_travel_as_a_deploy_sends_them():
