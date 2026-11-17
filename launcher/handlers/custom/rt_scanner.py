@@ -15,9 +15,11 @@ the exchange security ids of each strike's YES and NO sides). For the newest row
 - shut down once the venues no longer list it (closed) or its close has passed, for CLOSED_FOR after.
 
 The same rows also drive the `rt_maker` rule (gnomepy-research's rt_maker, a resting maker for Kalshi's liquidity
-rewards), with the film's Kalshi strikes only: launched while the film is open with Kalshi strikes and its close
-is ahead, however far, and whatever its reviews (the maker pulls its quotes around them itself; the rewards pay every
-day a strike's program runs, often weeks before release), and shut down as above.
+rewards), with the films' Kalshi strikes only. Every film open with Kalshi strikes and its close ahead, however far and
+whatever its reviews (the maker pulls its quotes around them itself; the rewards pay every day a strike's program runs,
+often weeks before release), is quoted, and the films are packed, in close order, first-fit into groups of at most
+MAX_STRIKES strikes: a launch trigger per group. In RELAUNCH_HOURS a shutdown trigger carries every group, and the rule
+stops any session holding something else, so the next scan relaunches it as its group now is.
 
 Each scan resends the same triggers; the launcher's dedup and its active-session check make the repeats no-ops, and the
 rt rule won't relaunch a film whose session stopped. Markets are sorted so the same strikes are always the same
@@ -52,6 +54,12 @@ WAVE_LAG = pd.Timedelta(hours=6)
 # rt_review_wave's default max_rt_reviews.
 RT_KNOWN = 5
 CLOSED, PAST_CLOSE = "closed", "past_close"
+# A session's Kalshi books all sit on one paper gateway (its one link to the venue), which refuses a session holding
+# more streams than gnome-orchestrator's gateway.paper.max.streams; a strike is a stream. Never above that cap.
+MAX_STRIKES = 150
+# The UTC hours a maker session whose films or strikes changed is relaunched in, once a day: a relaunch costs every
+# film of the session its resting orders and queue places for some minutes, and RT embargoes rarely lift then.
+RELAUNCH_HOURS = range(9, 10)
 
 
 def latest(rows: pd.DataFrame, key: str) -> pd.DataFrame:
@@ -93,23 +101,44 @@ def triggers(films: pd.DataFrame, reviews: pd.DataFrame, now: pd.Timestamp,
     return out
 
 
-def maker_triggers(films: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict]]:
-    """("launch" | "shutdown", trigger data) for the rt_maker rule, from each film's newest row."""
-    out = []
+def maker_groups(films: pd.DataFrame, now: pd.Timestamp) -> list[list[dict]]:
+    """The rt_maker's films from each film's newest row, packed in close order first-fit into groups of at most
+    MAX_STRIKES Kalshi strikes, never splitting a film."""
+    found = []
     for f in films.itertuples():
         markets = sorted((m for m in (json.loads(f.markets) if isinstance(f.markets, str) and f.markets else [])
                           if m["venue"] == MAKER_VENUE), key=lambda m: m["strike"])
-        data = {"film_id": f.film_id, "title": f.title, "rt_slug": f.rt_slug if isinstance(f.rt_slug, str) else None,
-                "markets": markets}
         close = pd.Timestamp(f.close) if not pd.isna(f.close) else None
-        if not f.open:
-            if now - pd.Timestamp(f.first_seen_at) <= CLOSED_FOR:
-                out.append(("shutdown", {**data, "reason": CLOSED}))
-        elif close is not None and close <= now:
-            if now - close <= CLOSED_FOR:
-                out.append(("shutdown", {**data, "reason": PAST_CLOSE}))
-        elif markets:
-            out.append(("launch", data))
+        if not f.open or not markets or (close is not None and close <= now):
+            continue
+        found.append((close, {"film_id": f.film_id, "title": f.title,
+                              "rt_slug": f.rt_slug if isinstance(f.rt_slug, str) else None,
+                              "close": close.isoformat() if close is not None else None, "markets": markets}))
+    found.sort(key=lambda x: (x[0] is None, x[0] if x[0] is not None else now, x[1]["film_id"]))
+    groups: list[list[dict]] = []
+    sizes: list[int] = []
+    for _, film in found:
+        n = len(film["markets"])
+        if n > MAX_STRIKES:
+            logger.warning("film %s has %d Kalshi strikes, more than one session's %d: its session will be refused",
+                           film["film_id"], n, MAX_STRIKES)
+        i = next((i for i, size in enumerate(sizes) if size + n <= MAX_STRIKES), None)
+        if i is None:
+            groups.append([])
+            sizes.append(0)
+            i = len(groups) - 1
+        groups[i].append(film)
+        sizes[i] += n
+    return groups
+
+
+def maker_triggers(films: pd.DataFrame, now: pd.Timestamp) -> list[tuple[str, dict]]:
+    """("launch" | "shutdown", trigger data) for the rt_maker rule: a launch per group, and in RELAUNCH_HOURS a
+    shutdown carrying every group (none at all once no film is open)."""
+    groups = maker_groups(films, now)
+    out = [("launch", {"group": i, "films": group}) for i, group in enumerate(groups)]
+    if now.hour in RELAUNCH_HOURS:
+        out.append(("shutdown", {"groups": groups}))
     return out
 
 

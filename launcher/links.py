@@ -13,6 +13,7 @@ still link by id."""
 import logging
 from dataclasses import dataclass
 
+from launcher import lookups
 from launcher.config import config
 from launcher.rules.catalog import RULE_TYPE_REGISTRY
 
@@ -100,8 +101,7 @@ def _look_up(listings: list[int], registry) -> list[_Found]:
             exchange_names[exchange_id] = hits[0].exchange_name if hits else f"Exchange {exchange_id}"
         return exchange_names[exchange_id]
 
-    out = []
-    for listing_id in listings:
+    def look_up(listing_id: int) -> _Found:
         found = _Found(listing_id)
         try:
             hits = registry.get_listing(listing_id=listing_id)
@@ -122,8 +122,10 @@ def _look_up(listings: list[int], registry) -> list[_Found]:
                     found.symbol = securities[0].symbol if securities else None
         except Exception:
             logger.warning("Couldn't look up listing %s for a request's links", listing_id, exc_info=True)
-        out.append(found)
-    return out
+        return found
+
+    # Side by side, sharing the caches: two threads may both fetch an exchange or an event, never a wrong one.
+    return lookups.each(look_up, listings)
 
 
 def _short(title: str) -> str:

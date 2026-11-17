@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 
+from launcher import lookups
 from launcher.rules.types import (
     STRATEGY_PARAMS_SCHEMA,
     STRATEGY_REQUIRED_PARAMS,
@@ -67,26 +68,46 @@ def _listing_id(ctx: RuleContext, exchange_id: int, esid: str) -> int | None:
     return int(found[0].listing_id) if found else None
 
 
-def resolve_legs(markets: list[dict], venues, ctx: RuleContext) -> tuple[list[dict], list[str]]:
-    """The venues' strikes whose two sides are in the registry, as legs, and what was skipped and why."""
+def _look_up_listings(markets: list[dict], venues, ctx: RuleContext
+                      ) -> tuple[dict[str, int | None], dict[tuple[int, str], int | None]]:
+    """Each venue's exchange id, and the listing id of every side of the markets on those venues (None if absent)."""
+    wanted = [m for m in markets if m["venue"] in venues]
     exchange_ids: dict[str, int | None] = {}
+    for venue in dict.fromkeys(m["venue"] for m in wanted):
+        found = ctx.registry.get_exchange(exchange_name=EXCHANGE_NAMES[venue])
+        exchange_ids[venue] = int(found[0].exchange_id) if found else None
+    sides = list(dict.fromkeys((exchange_ids[m["venue"]], m[side]) for m in wanted
+                               if exchange_ids[m["venue"]] is not None for side in ("yes", "no")))
+    return exchange_ids, dict(zip(sides, lookups.each(lambda key: _listing_id(ctx, *key), sides)))
+
+
+def _legs(markets: list[dict], venues, exchange_ids: dict[str, int | None],
+          listing_of: dict[tuple[int, str], int | None]) -> tuple[list[dict], list[str]]:
     legs, skipped = [], []
     for m in markets:
         venue = m["venue"]
         if venue not in venues:
             continue
-        if venue not in exchange_ids:
-            found = ctx.registry.get_exchange(exchange_name=EXCHANGE_NAMES[venue])
-            exchange_ids[venue] = int(found[0].exchange_id) if found else None
         if exchange_ids[venue] is None:
             skipped.append(f"{venue} (no {EXCHANGE_NAMES[venue]} exchange in the registry)")
             continue
-        yes, no = (_listing_id(ctx, exchange_ids[venue], m[side]) for side in ("yes", "no"))
+        yes, no = (listing_of[(exchange_ids[venue], m[side])] for side in ("yes", "no"))
         if yes is None or no is None:
             skipped.append(f"{venue} >={m['strike']}")
             continue
         legs.append({"venue": venue, "strike": int(m["strike"]), "yes_listing": yes, "no_listing": no})
     return legs, skipped
+
+
+def resolve_legs(markets: list[dict], venues, ctx: RuleContext) -> tuple[list[dict], list[str]]:
+    """The venues' strikes whose two sides are in the registry, as legs, and what was skipped and why."""
+    return _legs(markets, venues, *_look_up_listings(markets, venues, ctx))
+
+
+def resolve_films(films: list[dict], venues, ctx: RuleContext) -> list[tuple[list[dict], list[str]]]:
+    """resolve_legs of each film's markets, every film's sides looked up together."""
+    found = _look_up_listings([m for f in films for m in f["markets"]], venues, ctx)
+    return [_legs(f["markets"], venues, *found) for f in films]
 
 
 @register_rule_type
