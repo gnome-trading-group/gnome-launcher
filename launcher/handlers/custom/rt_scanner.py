@@ -54,9 +54,10 @@ WAVE_LAG = pd.Timedelta(hours=6)
 # rt_review_wave's default max_rt_reviews.
 RT_KNOWN = 5
 CLOSED, PAST_CLOSE = "closed", "past_close"
-# A session's Kalshi books all sit on one paper gateway (its one link to the venue), which refuses a session holding
-# more streams than gnome-orchestrator's gateway.paper.max.streams; a strike is a stream. Never above that cap.
-MAX_STRIKES = 150
+# A session's Kalshi books all sit on one paper gateway (its one link to the venue), which caps a session at
+# gnome-orchestrator's gateway.paper.max.streams (150; a strike is a stream) and gateway.session.max.open.orders (200; a
+# strike rests a bid and an ask). The tighter of the two, at two orders a strike.
+MAX_STRIKES = 100
 # The UTC hours a maker session whose films or strikes changed is relaunched in, once a day: a relaunch costs every
 # film of the session its resting orders and queue places for some minutes, and RT embargoes rarely lift then.
 RELAUNCH_HOURS = range(9, 10)

@@ -42,7 +42,7 @@ def test_a_group_session_holds_every_films_yes_listings_with_each_film_and_its_c
 
 
 def test_a_full_groups_args_stay_well_inside_the_hosts_user_data():
-    films = [_group_film(f"the-film-number-{k}-with-a-long-slug", _markets(f"F{k}", 15)) for k in range(10)]
+    films = [_group_film(f"the-film-number-{k}-with-a-long-slug", _markets(f"F{k}", 10)) for k in range(10)]
     listed = {(5, m[side]): 2_700_000 + i * 2 + j for k, f in enumerate(films) for i, m in enumerate(f["markets"], k * 100)
               for j, side in enumerate(("yes", "no"))}
     config = RtMakerRule().evaluate(_launch(*films), PARAMS, _ctx(listed)).resolved_config
